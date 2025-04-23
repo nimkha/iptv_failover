@@ -3,6 +3,7 @@ services:
     build: .
     container_name: iptv-failover
     restart: unless-stopped
+    working_dir: /app
     ports:
       - "8000:8000"
     volumes:
@@ -10,3 +11,4 @@ services:
       - ./stream_checker.py:/app/stream_checker.py
       - ./app.py:/app/app.py
       - ./requirements.txt:/app/requirements.txt
+      - ./docker-entrypoint.sh:/app/docker-entrypoint.sh

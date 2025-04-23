@@ -63,6 +63,12 @@ def playlist():
             m3u += f"#EXTINF:-1,{channel}\n{url}\n"
     return Response(m3u, mimetype="application/x-mpegURL")
 
+
+# Kick off the periodic reload regardless of how the app is run
+checker.config = parse_m3u_files("input/")
+threading.Thread(target=auto_reload_m3u, daemon=True).start()
+# === End auto‑reload setup ===
+
 if __name__ == "__main__":
     threading.Thread(target=auto_reload_m3u, daemon=True).start()
     app.run(host="0.0.0.0", port=8000)
