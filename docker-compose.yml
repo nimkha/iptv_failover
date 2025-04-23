@@ -1,0 +1,12 @@
+services:
+  iptv-failover:
+    build: .
+    container_name: iptv-failover
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./input:/app/input                # Your M3U files live here
+      - ./stream_checker.py:/app/stream_checker.py
+      - ./app.py:/app/app.py
+      - ./requirements.txt:/app/requirements.txt
