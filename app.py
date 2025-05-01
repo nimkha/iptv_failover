@@ -7,6 +7,7 @@ from stream_checker import StreamChecker
 import threading
 import re
 import xml.etree.ElementTree as ET
+import os
 
 FUZZY_MATCH_THRESHOLD = 80  # similarity threshold
 
