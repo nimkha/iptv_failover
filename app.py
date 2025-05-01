@@ -92,7 +92,32 @@ print("Loaded channels:")
 for name, urls in config["channels"].items():
     print(f"- {name}: {len(urls)} stream(s)")
 
-app = Flask(__name__)
+def create_app():
+    global checker
+    config = parse_m3u_files("input/")
+    print("Loaded channels:")
+    for name, urls in config["channels"].items():
+        print(f"- {name}: {len(urls)} stream(s)")
+
+    checker = StreamChecker(config)
+    checker.start_background_check()
+
+    flask_app = Flask(__name__)
+    
+    @flask_app.route("/playlist.m3u")
+    def playlist():
+        m3u = "#EXTM3U\n"
+        print("DEBUG: Active streams:")
+        for channel, url in checker.active_streams.items():
+            print(f"- {channel} → {url}")
+            if url:
+                m3u += f"#EXTINF:-1,{channel}\n{url}\n"
+        return Response(m3u, mimetype="application/x-mpegURL")
+
+    return flask_app
+
+# Used by Gunicorn
+app = create_app()
 
 @app.route("/playlist.m3u")
 def playlist():
@@ -103,7 +128,7 @@ def playlist():
         print(f"- {channel} → {url}")
         if url:
             m3u += f"#EXTINF:-1,{channel}\n{url}\n"
-            
+
     for channel, url in checker.active_streams.items():
         if url:
             m3u += f"#EXTINF:-1,{channel}\n{url}\n"
