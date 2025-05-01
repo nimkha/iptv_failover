@@ -83,10 +83,6 @@ def parse_m3u_files(m3u_folder="input/"):
 
     return {"channels": grouped}
 
-print("Loaded channels:")
-for name, urls in config["channels"].items():
-    print(f"- {name}: {len(urls)} stream(s)")
-
 def create_app():
     global checker
     config = parse_m3u_files("input/")
