@@ -5,6 +5,7 @@ from collections import defaultdict
 from rapidfuzz import process, fuzz
 from stream_checker import StreamChecker
 import threading
+import re
 
 FUZZY_MATCH_THRESHOLD = 85  # similarity threshold
 
@@ -14,6 +15,14 @@ def auto_reload_m3u(interval=3600):  # every hour
         checker.config = new_config
         print("[M3U Reloaded]")
         time.sleep(interval)
+
+def normalize_channel_name(name):
+    """Clean and normalize channel names for better grouping."""
+    name = name.lower()
+    name = re.sub(r'^(uk:|dstv:|epl\s?:|ss:|uk bt)', '', name)
+    name = re.sub(r'[^\w\s]', '', name)  # remove punctuation
+    name = re.sub(r'\s+', ' ', name).strip()
+    return name
 
 def parse_m3u_files(m3u_folder="input/"):
     raw_entries = []  # List of (channel_name, url)
@@ -32,6 +41,28 @@ def parse_m3u_files(m3u_folder="input/"):
             elif line.startswith("http") and channel_name:
                 raw_entries.append((channel_name, line))
                 channel_name = None
+
+    # Improved fuzzy grouping using normalized names
+    grouped = {}
+    name_map = {}  # maps normalized -> display name
+    for name, url in raw_entries:
+        norm = normalize_channel_name(name)
+
+        # Try to match existing normalized keys
+        match, score, _ = process.extractOne(norm, grouped.keys(), scorer=fuzz.token_sort_ratio) if grouped else (None, 0, None)
+        if match and score >= FUZZY_MATCH_THRESHOLD:
+            grouped[match].append(url)
+        else:
+            grouped[norm] = [url]
+            name_map[norm] = name  # save original display name
+
+    # Reconstruct channels with original display names
+    display_grouped = {}
+    for norm_name, urls in grouped.items():
+        display_name = name_map[norm_name]
+        display_grouped[display_name] = urls
+
+    return {"channels": display_grouped}
 
     # Fuzzy group similar channel names
     grouped = {}
