@@ -7,7 +7,7 @@ from stream_checker import StreamChecker
 import threading
 import re
 
-FUZZY_MATCH_THRESHOLD = 85  # similarity threshold
+FUZZY_MATCH_THRESHOLD = 70  # similarity threshold
 
 def auto_reload_m3u(interval=3600):  # every hour
     while True:
