@@ -81,6 +81,12 @@ def parse_m3u_files(m3u_folder="input/"):
 
 # Load and group streams
 config = parse_m3u_files("input/")
+
+# Adding this for debugging
+print("Parsed channels:")
+for name, urls in config["channels"].items():
+    print(f"- {name}: {len(urls)} stream(s)")
+
 checker = StreamChecker(config)
 checker.start_background_check()
 
