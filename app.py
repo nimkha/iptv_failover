@@ -6,8 +6,9 @@ from rapidfuzz import process, fuzz
 from stream_checker import StreamChecker
 import threading
 import re
+import xml.etree.ElementTree as ET
 
-FUZZY_MATCH_THRESHOLD = 70  # similarity threshold
+FUZZY_MATCH_THRESHOLD = 80  # similarity threshold
 
 def auto_reload_m3u(interval=3600):  # every hour
     while True:
@@ -16,13 +17,30 @@ def auto_reload_m3u(interval=3600):  # every hour
         print("[M3U Reloaded]")
         time.sleep(interval)
 
-def normalize_channel_name(name):
-    """Clean and normalize channel names for better grouping."""
+def normalize_name(name):
+    """Clean and normalize channel names for fuzzy comparison."""
     name = name.lower()
-    name = re.sub(r'^(uk:|dstv:|epl\s?:|ss:|uk bt)', '', name)
+    name = re.sub(r'^(uk:|dstv:|epl\s?:|ss:|us:|pt:|ca:|es:|tr:|lb:)', '', name)
     name = re.sub(r'[^\w\s]', '', name)  # remove punctuation
     name = re.sub(r'\s+', ' ', name).strip()
     return name
+
+def load_epg_display_names(epg_path="input/guide.xml"):
+    """Extract a list of display names from EPG XML."""
+    try:
+        tree = ET.parse(epg_path)
+        root = tree.getroot()
+        display_names = set()
+
+        for channel in root.findall("channel"):
+            for name in channel.findall("display-name"):
+                if name.text:
+                    display_names.add(name.text.strip())
+
+        return list(display_names)
+    except Exception as e:
+        print(f"WARNING: Failed to parse EPG: {e}")
+        return []
 
 def parse_m3u_files(m3u_folder="input/"):
     raw_entries = []  # List of (channel_name, url)
@@ -42,51 +60,30 @@ def parse_m3u_files(m3u_folder="input/"):
                 raw_entries.append((channel_name, line))
                 channel_name = None
 
-    # Improved fuzzy grouping using normalized names
+    # Load EPG names for matching
+    epg_names = load_epg_display_names(os.path.join(m3u_folder, "guide.xml"))
+    print(f"EPG loaded with {len(epg_names)} names.")
+
     grouped = {}
-    name_map = {}  # maps normalized -> display name
-    for name, url in raw_entries:
-        norm = normalize_channel_name(name)
+    for m3u_name, url in raw_entries:
+        norm_m3u = normalize_name(m3u_name)
 
-        # Try to match existing normalized keys
-        match, score, _ = process.extractOne(norm, grouped.keys(), scorer=fuzz.token_sort_ratio) if grouped else (None, 0, None)
-        if match and score >= FUZZY_MATCH_THRESHOLD:
-            grouped[match].append(url)
-        else:
-            grouped[norm] = [url]
-            name_map[norm] = name  # save original display name
+        # Match to EPG names if available
+        best_match = None
+        if epg_names:
+            result = process.extractOne(norm_m3u, [normalize_name(n) for n in epg_names], scorer=fuzz.token_sort_ratio)
+            if result:
+                best_match, score, _ = result
+                if score < FUZZY_MATCH_THRESHOLD:
+                    best_match = None
 
-    # Reconstruct channels with original display names
-    display_grouped = {}
-    for norm_name, urls in grouped.items():
-        display_name = name_map[norm_name]
-        display_grouped[display_name] = urls
-
-    return {"channels": display_grouped}
-
-    # Fuzzy group similar channel names
-    grouped = {}
-    for name, url in raw_entries:
-        result = process.extractOne(name, grouped.keys(), scorer=fuzz.token_sort_ratio)
-        if result:
-            match, score, match_index = result
-            if score >= FUZZY_MATCH_THRESHOLD:
-                grouped[match].append(url)
-            else:
-                grouped[name] = [url]
-        else:
-            grouped[name] = [url]
+        key = best_match if best_match else m3u_name  # fallback to original name
+        grouped.setdefault(key, []).append(url)
 
     return {"channels": grouped}
 
 # Load and group streams
 config = parse_m3u_files("input/")
-
-# Adding this for debugging
-print("Parsed channels:")
-for name, urls in config["channels"].items():
-    print(f"- {name}: {len(urls)} stream(s)")
-
 checker = StreamChecker(config)
 checker.start_background_check()
 
