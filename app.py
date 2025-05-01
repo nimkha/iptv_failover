@@ -83,11 +83,6 @@ def parse_m3u_files(m3u_folder="input/"):
 
     return {"channels": grouped}
 
-# Load and group streams
-config = parse_m3u_files("input/")
-checker = StreamChecker(config)
-checker.start_background_check()
-
 print("Loaded channels:")
 for name, urls in config["channels"].items():
     print(f"- {name}: {len(urls)} stream(s)")
@@ -118,22 +113,6 @@ def create_app():
 
 # Used by Gunicorn
 app = create_app()
-
-@app.route("/playlist.m3u")
-def playlist():
-    m3u = "#EXTM3U\n"
-
-    print("DEBUG: Active streams:")
-    for channel, url in checker.active_streams.items():
-        print(f"- {channel} → {url}")
-        if url:
-            m3u += f"#EXTINF:-1,{channel}\n{url}\n"
-
-    for channel, url in checker.active_streams.items():
-        if url:
-            m3u += f"#EXTINF:-1,{channel}\n{url}\n"
-    return Response(m3u, mimetype="application/x-mpegURL")
-
 
 # Kick off the periodic reload regardless of how the app is run
 checker.config = parse_m3u_files("input/")
