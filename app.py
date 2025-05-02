@@ -91,29 +91,26 @@ def create_app():
         print(f"- {name}: {len(urls)} stream(s)")
 
     checker = StreamChecker(config)
-    checker.start_background_check()
 
     flask_app = Flask(__name__)
     
     @flask_app.route("/playlist.m3u")
-    def playlist():
+    def serve_playlist():
         m3u = "#EXTM3U\n"
-        print("DEBUG: Active streams:")
-        for channel, url in checker.active_streams.items():
-            print(f"- {channel} → {url}")
-            if url:
-                m3u += f"#EXTINF:-1,{channel}\n{url}\n"
+        for channel, url in checker.get_active_streams().items():
+            m3u += f"#EXTINF:-1,{channel}\n{url}\n"
         return Response(m3u, mimetype="application/x-mpegURL")
+
+    @flask_app.route("/failover/<channel>")
+    def failover_channel(channel):
+        checker.mark_stream_failed(channel)
+        return f"Failover triggered for channel: {channel}\n"
 
     return flask_app
 
+
 # Used by Gunicorn
 app = create_app()
-
-# Kick off the periodic reload regardless of how the app is run
-checker.config = parse_m3u_files("input/")
-threading.Thread(target=auto_reload_m3u, daemon=True).start()
-# === End auto‑reload setup ===
 
 if __name__ == "__main__":
     threading.Thread(target=auto_reload_m3u, daemon=True).start()
