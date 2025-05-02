@@ -12,10 +12,15 @@ class StreamChecker:
 
     def is_stream_working(self, url):
         try:
-            resp = requests.get(url, timeout=STREAM_TIMEOUT, stream=True)
-            return resp.status_code == 200
-        except Exception:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            }
+            response = requests.get(url, headers=headers, timeout=5, stream=True, allow_redirects=True)
+            return response.status_code in [200, 301, 302]
+        except Exception as e:
+            print(f"[CHECK FAILED] {url} → {e}")
             return False
+
 
     def update_streams(self):
         while True:
