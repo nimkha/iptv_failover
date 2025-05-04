@@ -22,7 +22,8 @@ def normalize_name(name):
     """Normalize channel names by removing resolution tags, region suffixes, punctuation, and excess spaces."""
     name = name.lower()
     name = re.sub(r'\s*\(.*?\)|\[.*?\]', '', name)  # Remove things in () or []
-    name = re.sub(r'\b(hd|fhd|uhd|4k|sd|uk|us|ca|au|de|pt|fr)\b', '', name)
+    name = re.sub(r'\b(hd|fhd|uhd|4k|sd|uk|us|ca|au|de|pt|fr)\d*\b', '', name)  # Remove quality + digit suffix
+    name = re.sub(r'\b(hd|fhd|uhd|4k|sd|uk|us|ca|au|de|pt|fr)\b', '', name)  # Also remove any that don't have digits
     name = re.sub(r'^(uk:|dstv:|epl\s?:|ss:|us:|pt:|ca:|es:|tr:|lb:)', '', name)
     name = re.sub(r'[^\w\s]', '', name)  # Remove punctuation
     name = re.sub(r'\s+', ' ', name).strip()
