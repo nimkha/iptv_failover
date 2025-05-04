@@ -155,8 +155,16 @@ def create_app():
             if isinstance(entry, str):
                 m3u += f"#EXTINF:-1,{channel}\n{entry}\n"
             else:
-                m3u += (f"{entry.get('extinf', f'#EXTINF:-1 tvg-id="" tvg-name="{channel}" tvg-logo="" group-title=""')}\n"
-                    f"{entry['url']}\n")
+                # Safely handle the EXTINF line generation
+                extinf = entry.get('extinf')
+                if not extinf:
+                    # Fallback to generating a basic EXTINF line
+                    extinf = (f'#EXTINF:-1 tvg-id="{entry.get("tvg-id", "")}" '
+                            f'tvg-name="{channel}" '
+                            f'tvg-logo="{entry.get("tvg-logo", "")}" '
+                            f'group-title="{entry.get("group-title", "")}",'
+                            f'{channel}')
+                m3u += f"{extinf}\n{entry['url']}\n"
         
         return Response(m3u, mimetype="application/x-mpegURL")
 
