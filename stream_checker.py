@@ -35,19 +35,19 @@ class StreamChecker:
         self.config = new_config
         self.load_stream_groups()
 
-        def background_monitor(self, interval=60):
-            """Periodically checks if current streams are working."""
-            while True:
-                print("[Monitor] Checking active streams...")
-                for channel, urls in self.stream_groups.items():
-                    index = self.current_index.get(channel, 0)
-                    if not urls:
-                        continue
-                    url = urls[index]
-                    if not self._is_stream_working(url):
-                        print(f"[Monitor] {channel} stream failed. Advancing...")
-                        self.mark_stream_failed(channel)
-                time.sleep(interval)
+    def background_monitor(self, interval=60):
+        """Periodically checks if current streams are working."""
+        while True:
+            print("[Monitor] Checking active streams...")
+            for channel, urls in self.stream_groups.items():
+                index = self.current_index.get(channel, 0)
+                if not urls:
+                    continue
+                url = urls[index]
+                if not self._is_stream_working(url):
+                    print(f"[Monitor] {channel} stream failed. Advancing...")
+                    self.mark_stream_failed(channel)
+            time.sleep(interval)
 
     def _is_stream_working(self, url):
         try:
