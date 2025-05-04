@@ -11,7 +11,7 @@ import os
 
 FUZZY_MATCH_THRESHOLD = 80  # similarity threshold
 
-def auto_reload_m3u(interval=3600):  # every hour
+def auto_reload_m3u(interval=172800):  # every 48 hour
     while True:
         new_config = parse_m3u_files("input/")
         checker.config = new_config
@@ -19,12 +19,16 @@ def auto_reload_m3u(interval=3600):  # every hour
         time.sleep(interval)
 
 def normalize_name(name):
-    """Normalize channel names by removing resolution tags, region suffixes, punctuation, and excess spaces."""
+    """Normalize channel names with better case handling and pattern matching"""
+    if not name:
+        return ""
+        
     name = name.lower()
-    name = re.sub(r'\s*\(.*?\)|\[.*?\]', '', name)  # Remove things in () or []
-    name = re.sub(r'\b(hd|fhd|uhd|4k|sd|uk|us|ca|au|de|pt|fr)\d*\b', '', name)  # Remove quality + digit suffix
-    name = re.sub(r'\b(hd|fhd|uhd|4k|sd|uk|us|ca|au|de|pt|fr)\b', '', name)  # Also remove any that don't have digits
-    name = re.sub(r'^(uk:|dstv:|epl\s?:|ss:|us:|pt:|ca:|es:|tr:|lb:)', '', name)
+    # Remove resolution/region tags (case-insensitive)
+    name = re.sub(r'(?i)\s*\(.*?\)|\[.*?\]', '', name) # Remove things in () or []
+    name = re.sub(r'(?i)\b(hd|fhd|uhd|4k|sd|uk|us|ca|au|de|pt|fr)\d*\b', '', name) # Remove quality + digit suffix
+    name = re.sub(r'(?i)\b(hd|fhd|uhd|4k|sd|uk|us|ca|au|de|pt|fr)\b', '', name) # Also remove any that don't have digits
+    name = re.sub(r'(?i)^(uk:|dstv:|epl\s?:|ss:|us:|pt:|ca:|es:|tr:|lb:)', '', name)
     name = re.sub(r'[^\w\s]', '', name)  # Remove punctuation
     name = re.sub(r'\s+', ' ', name).strip()
     return name
@@ -46,48 +50,77 @@ def load_epg_display_names(epg_path="input/guide.xml"):
         print(f"WARNING: Failed to parse EPG: {e}")
         return []
 
+def parse_m3u_entry(extinf_line):
+    """Parse EXTINF line with all attributes"""
+    entry = {
+        'tvg-id': '',
+        'tvg-name': '',
+        'tvg-logo': '',
+        'group-title': '',
+        'name': '',
+        'extinf': extinf_line
+    }
+    
+    # Extract attributes
+    attr_match = re.search(r'#EXTINF:-1\s+(.*?),', extinf_line)
+    if attr_match:
+        attrs = attr_match.group(1)
+        for attr in attrs.split(' '):
+            if '=' in attr:
+                key, val = attr.split('=', 1)
+                val = val.strip('"')
+                if key in entry:
+                    entry[key] = val
+    
+    # Extract display name (after last comma)
+    name_match = extinf_line.rsplit(',', 1)
+    if len(name_match) > 1:
+        entry['name'] = name_match[1].strip()
+    
+    return entry
+
 def parse_m3u_files(m3u_folder="input/"):
-    raw_entries = []
+    entries = []  # Will store dicts instead of tuples
 
     for m3u_file in glob.glob(f"{m3u_folder}/*.m3u"):
         with open(m3u_file, "r", encoding="utf-8") as f:
             lines = f.readlines()
 
-        channel_name = None
+        current_entry = None
         for line in lines:
             line = line.strip()
             if line.startswith("#EXTINF"):
-                parts = line.split(",", 1)
-                if len(parts) > 1:
-                    channel_name = parts[1].strip()
-            elif line.startswith("http") and channel_name:
-                raw_entries.append((channel_name, line))
-                channel_name = None
+                current_entry = parse_m3u_entry(line)
+            elif line.startswith("http") and current_entry:
+                current_entry['url'] = line
+                entries.append(current_entry)
+                current_entry = None
 
-    # Load EPG names
+    # Grouping logic
+    grouped = defaultdict(list)
     epg_names = load_epg_display_names(os.path.join(m3u_folder, "guide.xml"))
     norm_epg_names = {normalize_name(name): name for name in epg_names}
-    print(f"EPG loaded with {len(epg_names)} names.")
 
-    grouped = {}
+    for entry in entries:
+        norm_name = normalize_name(entry['name'])
+        best_match = None
+        best_score = 0
 
-    for m3u_name, url in raw_entries:
-        norm_m3u = normalize_name(m3u_name)
-
-        # Try to match to EPG
-        match_key = None
+        # Try EPG matching first
         if norm_epg_names:
-            result = process.extractOne(norm_m3u, norm_epg_names.keys(), scorer=fuzz.token_sort_ratio)
-            if result:
-                best_match, score, _ = result
-                if score >= FUZZY_MATCH_THRESHOLD:
-                    match_key = norm_epg_names[best_match]
+            result = process.extractOne(norm_name, norm_epg_names.keys(), 
+                                      scorer=fuzz.token_sort_ratio)
+            if result and result[1] >= FUZZY_MATCH_THRESHOLD:
+                best_match = norm_epg_names[result[0]]
 
-        # Fallback to normalized m3u name
-        if not match_key:
-            match_key = norm_m3u
+        # Fallback to cleaned version of current name
+        if not best_match:
+            best_match = " ".join([word.capitalize() for word in norm_name.split()])
 
-        grouped.setdefault(match_key, []).append(url)
+        # Preserve all original metadata in the grouped entry
+        grouped_entry = entry.copy()
+        grouped_entry['canonical_name'] = best_match
+        grouped[best_match].append(grouped_entry)
 
     return {"channels": grouped}
 
@@ -108,8 +141,21 @@ def create_app():
     @flask_app.route("/playlist.m3u")
     def serve_playlist():
         m3u = "#EXTM3U\n"
-        for channel, url in checker.get_active_streams().items():
-            m3u += f"#EXTINF:-1,{channel}\n{url}\n"
+        active_streams = checker.get_active_streams()
+        
+        for channel, entries in active_streams.items():
+            if not entries:
+                continue
+                
+            # Use first entry's metadata as representative
+            entry = entries[0]
+            m3u += (f"#EXTINF:-1 tvg-id=\"{entry.get('tvg-id', '')}\" "
+                f"tvg-name=\"{entry.get('canonical_name', channel)}\" "
+                f"tvg-logo=\"{entry.get('tvg-logo', '')}\" "
+                f"group-title=\"{entry.get('group-title', '')}\","
+                f"{entry.get('canonical_name', channel)}\n")
+            m3u += f"{entry['url']}\n"
+        
         return Response(m3u, mimetype="application/x-mpegURL")
 
     @flask_app.route("/failover/<channel>")

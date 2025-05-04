@@ -18,11 +18,13 @@ class StreamChecker:
 
     def get_active_streams(self):
         with self.lock:
-            return {
-                channel: urls[self.current_index.get(channel, 0)]
-                for channel, urls in self.stream_groups.items()
-                if urls
-            }
+            active = {}
+            for channel, entries in self.stream_groups.items():
+                if not entries:
+                    continue
+                idx = self.current_index.get(channel, 0)
+                active[channel] = entries[idx]
+            return active
 
     def mark_stream_failed(self, channel):
         with self.lock:
@@ -55,7 +57,7 @@ class StreamChecker:
     def _is_stream_working(self, url):
         try:
             headers = {
-                "User-Agent": "Mozilla/5.0"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
             }
             response = requests.get(url, headers=headers, timeout=5, stream=True)
             return response.status_code in [200, 301, 302]
