@@ -17,13 +17,14 @@ class StreamChecker:
                 self.current_index.setdefault(name, 0)
 
     def get_active_streams(self):
+        """Returns dictionary of {channel: entry_dict}"""
         with self.lock:
             active = {}
             for channel, entries in self.stream_groups.items():
                 if not entries:
                     continue
                 idx = self.current_index.get(channel, 0)
-                active[channel] = entries[idx]
+                active[channel] = entries[idx]  # Return the full entry dictionary
             return active
 
     def mark_stream_failed(self, channel):
@@ -44,23 +45,22 @@ class StreamChecker:
         """Periodically checks if current streams are working."""
         while True:
             print("[Monitor] Checking active streams...")
-            for channel, urls in self.stream_groups.items():
-                index = self.current_index.get(channel, 0)
-                if not urls:
-                    continue
-                url = urls[index]
-                if not self._is_stream_working(url):
+            active_streams = self.get_active_streams()
+            for channel, entry in active_streams.items():
+                if not self._is_stream_working(entry):
                     print(f"[Monitor] {channel} stream failed. Advancing...")
                     self.mark_stream_failed(channel)
             time.sleep(interval)
 
-    def _is_stream_working(self, url):
+    def _is_stream_working(self, entry):
+        """Check if a stream URL is working (accepts either entry dict or raw URL)"""
         try:
+            url = entry['url'] if isinstance(entry, dict) else entry
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
             }
             response = requests.get(url, headers=headers, timeout=5, stream=True)
             return response.status_code in [200, 301, 302]
         except Exception as e:
-            print(f"[Monitor] Failed check: {url} → {e}")
+            print(f"[Monitor] Failed check: {url} → {str(e)}")
             return False
