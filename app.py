@@ -118,9 +118,13 @@ def parse_m3u_files(m3u_folder="input/"):
             best_match = " ".join([word.capitalize() for word in norm_name.split()])
 
         # Preserve all original metadata in the grouped entry
+        # Ensure every entry has a URL
+        if 'url' not in entry:
+            continue
+            
         grouped_entry = entry.copy()
-        grouped_entry['canonical_name'] = best_match
-        grouped[best_match].append(grouped_entry)
+        grouped_entry['canonical_name'] = best_match if best_match else norm_name
+        grouped[grouped_entry['canonical_name']].append(grouped_entry)
 
     return {"channels": grouped}
 
@@ -143,18 +147,16 @@ def create_app():
         m3u = "#EXTM3U\n"
         active_streams = checker.get_active_streams()
         
-        for channel, entries in active_streams.items():
-            if not entries:
+        for channel, entry in active_streams.items():
+            if not entry:  # Skip empty entries
                 continue
                 
-            # Use first entry's metadata as representative
-            entry = entries[0]
-            m3u += (f"#EXTINF:-1 tvg-id=\"{entry.get('tvg-id', '')}\" "
-                f"tvg-name=\"{entry.get('canonical_name', channel)}\" "
-                f"tvg-logo=\"{entry.get('tvg-logo', '')}\" "
-                f"group-title=\"{entry.get('group-title', '')}\","
-                f"{entry.get('canonical_name', channel)}\n")
-            m3u += f"{entry['url']}\n"
+            # Handle case where entry might be a string (backward compatibility)
+            if isinstance(entry, str):
+                m3u += f"#EXTINF:-1,{channel}\n{entry}\n"
+            else:
+                m3u += (f"{entry.get('extinf', f'#EXTINF:-1 tvg-id="" tvg-name="{channel}" tvg-logo="" group-title=""')}\n"
+                    f"{entry['url']}\n")
         
         return Response(m3u, mimetype="application/x-mpegURL")
 
