@@ -19,10 +19,12 @@ def auto_reload_m3u(interval=3600):  # every hour
         time.sleep(interval)
 
 def normalize_name(name):
-    """Clean and normalize channel names for fuzzy comparison."""
+    """Normalize channel names by removing resolution tags, region suffixes, punctuation, and excess spaces."""
     name = name.lower()
+    name = re.sub(r'\s*\(.*?\)|\[.*?\]', '', name)  # Remove things in () or []
+    name = re.sub(r'\b(hd|fhd|uhd|4k|sd|uk|us|ca|au|de|pt|fr)\b', '', name)
     name = re.sub(r'^(uk:|dstv:|epl\s?:|ss:|us:|pt:|ca:|es:|tr:|lb:)', '', name)
-    name = re.sub(r'[^\w\s]', '', name)  # remove punctuation
+    name = re.sub(r'[^\w\s]', '', name)  # Remove punctuation
     name = re.sub(r'\s+', ' ', name).strip()
     return name
 
@@ -44,7 +46,7 @@ def load_epg_display_names(epg_path="input/guide.xml"):
         return []
 
 def parse_m3u_files(m3u_folder="input/"):
-    raw_entries = []  # List of (channel_name, url)
+    raw_entries = []
 
     for m3u_file in glob.glob(f"{m3u_folder}/*.m3u"):
         with open(m3u_file, "r", encoding="utf-8") as f:
@@ -61,25 +63,30 @@ def parse_m3u_files(m3u_folder="input/"):
                 raw_entries.append((channel_name, line))
                 channel_name = None
 
-    # Load EPG names for matching
+    # Load EPG names
     epg_names = load_epg_display_names(os.path.join(m3u_folder, "guide.xml"))
+    norm_epg_names = {normalize_name(name): name for name in epg_names}
     print(f"EPG loaded with {len(epg_names)} names.")
 
     grouped = {}
+
     for m3u_name, url in raw_entries:
         norm_m3u = normalize_name(m3u_name)
 
-        # Match to EPG names if available
-        best_match = None
-        if epg_names:
-            result = process.extractOne(norm_m3u, [normalize_name(n) for n in epg_names], scorer=fuzz.token_sort_ratio)
+        # Try to match to EPG
+        match_key = None
+        if norm_epg_names:
+            result = process.extractOne(norm_m3u, norm_epg_names.keys(), scorer=fuzz.token_sort_ratio)
             if result:
                 best_match, score, _ = result
-                if score < FUZZY_MATCH_THRESHOLD:
-                    best_match = None
+                if score >= FUZZY_MATCH_THRESHOLD:
+                    match_key = norm_epg_names[best_match]
 
-        key = best_match if best_match else m3u_name  # fallback to original name
-        grouped.setdefault(key, []).append(url)
+        # Fallback to normalized m3u name
+        if not match_key:
+            match_key = norm_m3u
+
+        grouped.setdefault(match_key, []).append(url)
 
     return {"channels": grouped}
 
@@ -91,6 +98,9 @@ def create_app():
         print(f"- {name}: {len(urls)} stream(s)")
 
     checker = StreamChecker(config)
+
+    # Start automatic health monitor
+    threading.Thread(target=checker.background_monitor, daemon=True).start()
 
     flask_app = Flask(__name__)
     
