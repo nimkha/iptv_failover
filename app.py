@@ -18,43 +18,27 @@ def auto_reload_m3u(interval=172800):  # every 48 hour
         print("[M3U Reloaded]")
         time.sleep(interval)
 
-def normalize_name(name, epg_map=None):
-    """Normalize names with proper prefix handling"""
+def normalize_name(name):
+    """Robust normalization with proper regex escaping"""
     if not name:
-        return "Unknown", "unknown.uk", "Unknown"
+        return "Unknown", "unknown.uk"
     
-    original = name
-    name = name.lower()
+    # Remove unwanted prefixes/suffixes - properly escaped regex
+    name = re.sub(r'(?i)\s*\([^)]*\)|\s*\[[^]]*\]', '', name)  # Remove () and []
+    name = re.sub(r'(?i)\b(?:hd|fhd|uhd|4k|sd)\s*\d*\b', '', name)  # Remove quality
+    name = re.sub(r'(?i)^(?:uk\s*:|dstv\s*:|epl\s*:|ss\s*:)\s*', '', name)  # Remove prefixes
     
-    # Extract prefix (UK, DSTV, EPL etc.)
-    prefix = ""
-    prefix_match = re.match(r'^(uk|dstv|epl|ss|tnt|bt)\s*[:]?\s*', name)
-    if prefix_match:
-        prefix = prefix_match.group(1).upper()
-        name = name[prefix_match.end():]
-    
-    # Basic cleaning
-    name = re.sub(r'\s*\(.*?\)', '', name)  # Remove anything in parentheses
-    name = re.sub(r'\b(?:hd|fhd|uhd|4k|sd)\s*\d*\b', '', name)  # Remove quality
+    # Clean up and capitalize
     name = re.sub(r'[^\w\s]', '', name)  # Remove punctuation
     name = re.sub(r'\s+', ' ', name).strip()
     
     # Handle channel numbers (preserve main number)
-    name = re.sub(r'(?:\b(?:bt|tnt|sky|ss|supersport)\s+(?:sports?\s+)?(\d+).*', r'\1', name)
+    name = re.sub(r'(?i)\b(?:bt|tnt|sky|ss|supersport)\s+(?:sports?\s+)?(\d+).*', r'\1', name)
     
-    # Build display name
-    display_name = " ".join([word.capitalize() for word in name.split()])
-    if prefix:
-        display_name = f"{prefix} {display_name}"
+    display_name = " ".join(word.capitalize() for word in name.split())
+    tvg_id = re.sub(r'\s+', '', name.lower()) + '.uk'
     
-    # Generate tvg-id
-    tvg_id = re.sub(r'\s+', '', name.lower())
-    if prefix:
-        tvg_id = f"{prefix.lower()}{tvg_id}"
-    if not tvg_id.endswith('.uk'):
-        tvg_id += '.uk'
-    
-    return display_name, tvg_id, name
+    return display_name, tvg_id
 
 def load_epg_map(epg_path="input/guide.xml"):
     """Create mapping from EPG data: {normalized_name: (display_name, tvg-id)}"""
@@ -120,9 +104,7 @@ def parse_m3u_entry(extinf_line):
 
 def parse_m3u_files(m3u_folder="input/"):
     entries = []
-    epg_map = load_epg_map(os.path.join(m3u_folder, "guide.xml"))
     
-    # Parse M3U files
     for m3u_file in glob.glob(f"{m3u_folder}/*.m3u"):
         try:
             with open(m3u_file, "r", encoding="utf-8") as f:
@@ -144,13 +126,13 @@ def parse_m3u_files(m3u_folder="input/"):
     grouped = defaultdict(list)
     for entry in entries:
         try:
-            display_name, tvg_id, norm_name = normalize_name(entry['name'], epg_map)
+            display_name, tvg_id = normalize_name(entry['name'])
             
             entry.update({
                 'canonical_name': display_name,
-                'tvg-id': entry.get('tvg-id') or tvg_id,
-                'tvg-name': entry.get('tvg-name') or display_name,
-                'group-title': entry.get('group-title') or display_name
+                'tvg-id': entry.get('tvg-id', tvg_id),
+                'tvg-name': display_name,  # Always use normalized name
+                'group-title': display_name  # Same as tvg-name
             })
             
             grouped[display_name].append(entry)
@@ -183,16 +165,11 @@ def create_app():
             if not entry:
                 continue
                 
-            # Ensure tvg-name is properly set
-            tvg_name = entry.get('tvg-name', '')
-            if not tvg_name or len(tvg_name) < 3:  # Fix cases like "UK:"
-                tvg_name = entry.get('canonical_name', channel)
-            
-            extinf = (f"#EXTINF:-1 tvg-id=\"{entry['tvg-id']}\" "
-                    f"tvg-name=\"{tvg_name}\" "
-                    f"tvg-logo=\"{entry.get('tvg-logo', '')}\" "
-                    f"group-title=\"{entry['group-title']}\","
-                    f"{entry['canonical_name']}")
+            extinf = (f'#EXTINF:-1 tvg-id="{entry["tvg-id"]}" '
+                    f'tvg-name="{entry["tvg-name"]}" '
+                    f'tvg-logo="{entry.get("tvg-logo", "")}" '
+                    f'group-title="{entry["group-title"]}",'
+                    f'{entry["canonical_name"]}')
             
             m3u += f"{extinf}\n{entry['url']}\n"
         
