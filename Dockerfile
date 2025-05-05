@@ -5,9 +5,9 @@ FROM python:3.11
 WORKDIR /app
 
 # Ensure logs directory exists
-RUN mkdir -p /logs
+RUN mkdir -p logs
 # Set log file permissions
-RUN chmod a+rw /logs
+RUN chmod a+rw logs
 
 # Install system deps (if any)
 RUN apt-get update && apt-get install -y --no-install-recommends \
