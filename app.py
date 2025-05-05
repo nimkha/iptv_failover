@@ -40,18 +40,18 @@ def normalize_name(name):
     
     return display_name, tvg_id
 
-def load_epg_map(epg_path="input/guide.xml"):
-    """Create mapping from EPG data: {normalized_name: (display_name, tvg-id)}"""
+def load_epg_map(epg_path):
+    """Create mapping from EPG data: {display-name: tvg-id}"""
     epg_map = {}
     try:
         tree = ET.parse(epg_path)
         for channel in tree.findall(".//channel"):
-            tvg_id = channel.get("id", "")
+            tvg_id = channel.get("id")
+            if not tvg_id:
+                continue
             for name in channel.findall("display-name"):
                 if name.text:
-                    norm_name = name.text.lower()
-                    norm_name = re.sub(r'[^\w\s]', '', norm_name)
-                    epg_map[norm_name] = (name.text.strip(), tvg_id)
+                    epg_map[name.text.strip()] = tvg_id
     except Exception as e:
         print(f"EPG parsing error: {e}")
     return epg_map
@@ -103,8 +103,67 @@ def parse_m3u_entry(extinf_line):
     return entry
 
 def parse_m3u_files(m3u_folder="input/"):
+    """Parse M3U files with EPG integration and dynamic channel mapping"""
     entries = []
     
+    # Load EPG data first
+    epg_map = load_epg_map(os.path.join(m3u_folder, "guide.xml"))
+    
+    # Load and parse channels.txt
+    channel_variations = defaultdict(list)
+    try:
+        with open(os.path.join(m3u_folder, "channels.txt"), "r") as f:
+            current_group = "General"
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                if line.startswith("#"):
+                    current_group = line[1:].strip()
+                    continue
+                
+                # Find matching EPG ID if available
+                epg_id = None
+                epg_name = None
+                for epg_key in epg_map.keys():
+                    if fuzz.ratio(line.lower(), epg_key.lower()) > 85:
+                        epg_id = epg_map[epg_key]
+                        epg_name = epg_key
+                        break
+                
+                # Store with EPG data if found
+                if epg_id:
+                    channel_variations[line] = {
+                        'canonical': line,
+                        'epg_id': epg_id,
+                        'epg_name': epg_name,
+                        'variations': [line]
+                    }
+                else:
+                    channel_variations[line] = {
+                        'canonical': line,
+                        'epg_id': None,
+                        'variations': [line]
+                    }
+                
+                # Generate common variations
+                no_prefix = re.sub(r'^(UK|US|DSTV|EPL)\s*[:]?\s*', '', line, flags=re.I)
+                if no_prefix != line:
+                    channel_variations[line]['variations'].append(no_prefix)
+                
+                if 'Sky Sports' in line:
+                    channel_variations[line]['variations'].append(line.replace('Sky Sports', 'SS'))
+                
+                if re.search(r'\d+$', line):
+                    channel_variations[line]['variations'].append(re.sub(r'\s*\d+$', '', line))
+                    
+    except FileNotFoundError:
+        print("Note: channels.txt not found - using EPG and basic normalization only")
+    except Exception as e:
+        print(f"Error reading channels.txt: {e}")
+
+    # Parse M3U files
     for m3u_file in glob.glob(f"{m3u_folder}/*.m3u"):
         try:
             with open(m3u_file, "r", encoding="utf-8") as f:
@@ -126,21 +185,64 @@ def parse_m3u_files(m3u_folder="input/"):
     grouped = defaultdict(list)
     for entry in entries:
         try:
-            display_name, tvg_id = normalize_name(entry['name'])
+            original_name = entry['name']
+            matched_channel = None
+            
+            # Try to match against all known channel variations
+            for channel_data in channel_variations.values():
+                for variant in channel_data['variations']:
+                    if fuzz.partial_ratio(original_name.lower(), variant.lower()) > 80:
+                        matched_channel = channel_data
+                        break
+                if matched_channel:
+                    break
+            
+            if matched_channel:
+                # Use EPG data if available
+                if matched_channel['epg_id']:
+                    display_name = matched_channel['epg_name']
+                    tvg_id = matched_channel['epg_id']
+                else:
+                    display_name = matched_channel['canonical']
+                    tvg_id = generate_tvg_id(display_name)
+            else:
+                # Fallback to EPG matching
+                epg_match = None
+                for epg_name, epg_id in epg_map.items():
+                    if fuzz.partial_ratio(original_name.lower(), epg_name.lower()) > 75:
+                        epg_match = (epg_name, epg_id)
+                        break
+                
+                if epg_match:
+                    display_name, tvg_id = epg_match
+                else:
+                    display_name, tvg_id = normalize_name(original_name)
             
             entry.update({
                 'canonical_name': display_name,
                 'tvg-id': entry.get('tvg-id', tvg_id),
-                'tvg-name': display_name,  # Always use normalized name
-                'group-title': display_name  # Same as tvg-name
+                'tvg-name': display_name,
+                'group-title': display_name
             })
             
             grouped[display_name].append(entry)
+            
         except Exception as e:
-            print(f"Error processing entry {entry.get('name')}: {e}")
+            print(f"Error processing entry {original_name}: {e}")
             continue
     
     return {"channels": grouped}
+
+def fuzzy_match(channel_name, pattern):
+    """Check if channel name matches a pattern with fuzzy matching"""
+    channel_clean = re.sub(r'[^a-z0-9]', '', channel_name.lower())
+    pattern_clean = re.sub(r'[^a-z0-9]', '', pattern.lower())
+    return fuzz.partial_ratio(channel_clean, pattern_clean) > 80
+
+def generate_tvg_id(channel_name):
+    """Fallback tvg-id generation when no EPG match exists"""
+    base_id = re.sub(r'[^a-z0-9]', '', channel_name.lower())
+    return f"{base_id}.fallback"
 
 def create_app():
     global checker
