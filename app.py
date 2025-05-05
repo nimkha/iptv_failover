@@ -19,30 +19,39 @@ def auto_reload_m3u(interval=172800):  # every 48 hour
         time.sleep(interval)
 
 def normalize_name(name, epg_map=None):
-    """Normalize names with EPG matching priority"""
+    """Normalize names with safe EPG matching"""
     if not name:
-        return "", "", ""
+        return "Unknown", "unknown", "unknown"
     
     original = name
     name = name.lower()
     
     # Basic cleaning
-    name = re.sub(r'(?i)\s*\(.*?\)', '', name)  # Remove anything in parentheses
-    name = re.sub(r'(?i)\b(?:hd|fhd|uhd|4k|sd)\s*\d*\b', '', name)  # Remove quality
+    name = re.sub(r'(?i)\s*\(.*?\)', '', name)
+    name = re.sub(r'(?i)\b(?:hd|fhd|uhd|4k|sd)\s*\d*\b', '', name)
     name = re.sub(r'(?i)^(?:uk\s*:|dstv\s*:|epl\s*:|ss\s*:|us\s*:|pt\s*:|ca\s*:|es\s*:|tr\s*:|lb\s*:)', '', name)
-    name = re.sub(r'[^\w\s]', '', name)  # Remove punctuation
+    name = re.sub(r'[^\w\s]', '', name)
     name = re.sub(r'\s+', ' ', name).strip()
     
-    # Try to match with EPG first
+    # Try to match with EPG if available
     if epg_map:
-        best_match, score, key = process.extractOne(name, epg_map.keys(), scorer=fuzz.token_set_ratio)
-        if score >= 70:  # Good enough match
-            return epg_map[key], key, name  # (display_name, tvg-id, normalized_name)
+        try:
+            # Get best match with score
+            best_match, score, key = process.extractOne(name, epg_map.keys(), scorer=fuzz.token_set_ratio)
+            if score >= 70:  # Good enough match
+                return epg_map[key][0], epg_map[key][1], name
+        except Exception as e:
+            print(f"EPG matching error for '{name}': {e}")
     
-    # Fallback normalization
+    # Fallback normalization for unmatched channels
+    # Handle channel numbers
     name = re.sub(r'(?i)((?:bt|tnt|sky|ss|supersport)\s+(?:sports?\s+)?(\d+)).*', r'\1\2', name)
     display_name = " ".join([word.capitalize() for word in name.split()])
-    tvg_id = re.sub(r'\s+', '', name.lower()) + ".uk"  # Default fallback ID
+    
+    # Generate tvg-id from normalized name
+    tvg_id = re.sub(r'\s+', '', name.lower())
+    if not tvg_id.endswith('.uk'):
+        tvg_id += '.uk'  # Default suffix
     
     return display_name, tvg_id, name
 
@@ -109,12 +118,17 @@ def parse_m3u_entry(extinf_line):
     return entry
 
 def parse_m3u_files(m3u_folder="input/"):
-    entries = []  # Will store dicts instead of tuples
+    entries = []
     epg_map = load_epg_map(os.path.join(m3u_folder, "guide.xml"))
-
+    
+    # Parse M3U files
     for m3u_file in glob.glob(f"{m3u_folder}/*.m3u"):
-        with open(m3u_file, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+        try:
+            with open(m3u_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception as e:
+            print(f"Error reading {m3u_file}: {e}")
+            continue
 
         current_entry = None
         for line in lines:
@@ -128,17 +142,20 @@ def parse_m3u_files(m3u_folder="input/"):
 
     grouped = defaultdict(list)
     for entry in entries:
-        display_name, tvg_id, norm_name = normalize_name(entry['name'], epg_map)
-        
-        # Update entry with normalized values
-        entry.update({
-            'canonical_name': display_name,
-            'tvg-id': entry.get('tvg-id') or tvg_id,
-            'tvg-name': entry.get('tvg-name') or display_name,
-            'group-title': entry.get('group-title') or display_name
-        })
-        
-        grouped[display_name].append(entry)
+        try:
+            display_name, tvg_id, norm_name = normalize_name(entry['name'], epg_map)
+            
+            entry.update({
+                'canonical_name': display_name,
+                'tvg-id': entry.get('tvg-id') or tvg_id,
+                'tvg-name': entry.get('tvg-name') or display_name,
+                'group-title': entry.get('group-title') or display_name
+            })
+            
+            grouped[display_name].append(entry)
+        except Exception as e:
+            print(f"Error processing entry {entry.get('name')}: {e}")
+            continue
     
     return {"channels": grouped}
 
