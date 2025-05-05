@@ -13,50 +13,74 @@ from logging.handlers import RotatingFileHandler
 
 FUZZY_MATCH_THRESHOLD = 70  # similarity threshold
 
-# Configure logging
-def setup_logging():
+# Configure logging only once
+if not logging.getLogger().handlers:
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            RotatingFileHandler('logs/iptv_failover.log', maxBytes=1000000, backupCount=3),
             logging.StreamHandler()
         ]
     )
+    # File handler only in main process
+    if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
+        file_handler = RotatingFileHandler(
+            'logs/iptv_failover.log',
+            maxBytes=1000000,
+            backupCount=3
+        )
+        logging.getLogger().addHandler(file_handler)
 
-setup_logging()
 logger = logging.getLogger(__name__)
 
-def auto_reload_m3u(interval=172800):  # every 48 hour
+def auto_reload_m3u(interval=172800):  # every 48 hours
     while True:
         new_config = parse_m3u_files("input/")
         checker.config = new_config
-        print("[M3U Reloaded]")
+        logger.info("M3U playlist reloaded")
         time.sleep(interval)
 
 def normalize_name(name):
-    """Robust normalization with proper regex escaping"""
+    """Normalize channel names while preserving main channel numbers"""
     if not name:
         return "Unknown", "unknown.uk"
     
-    # Remove unwanted prefixes/suffixes - properly escaped regex
-    name = re.sub(r'(?i)\s*\([^)]*\)|\s*\[[^]]*\]', '', name)  # Remove () and []
-    name = re.sub(r'(?i)\b(?:hd|fhd|uhd|4k|sd)\s*\d*\b', '', name)  # Remove quality
-    name = re.sub(r'(?i)^(?:uk\s*:|dstv\s*:|epl\s*:|ss\s*:)\s*', '', name)  # Remove prefixes
+    original = name
+    name = name.lower()
     
-    # Clean up and capitalize
-    name = re.sub(r'[^\w\s]', '', name)  # Remove punctuation
+    # Remove resolution/quality indicators and regional prefixes
+    name = re.sub(r'(?i)\s*\(.*?\)', '', name)  # Remove anything in parentheses
+    name = re.sub(r'(?i)\b(?:hd|fhd|uhd|4k|sd)\s*\d*\b', '', name)
+    name = re.sub(r'(?i)^(?:uk\s*:|dstv\s*:|epl\s*:|ss\s*:|us\s*:|pt\s*:|ca\s*:|es\s*:|tr\s*:|lb\s*:)', '', name)
+    
+    # Handle channel numbers - preserve main number but remove version numbers
+    name = re.sub(r'(?i)((?:bt|tnt|sky|ss|supersport)\s+(?:sports?\s+)?(\d+)).*', r'\1\2', name)
+    
+    # Clean up remaining special characters and spaces
+    name = re.sub(r'[^\w\s]', '', name)
     name = re.sub(r'\s+', ' ', name).strip()
     
-    # Handle channel numbers (preserve main number)
-    name = re.sub(r'(?i)\b(?:bt|tnt|sky|ss|supersport)\s+(?:sports?\s+)?(\d+).*', r'\1', name)
-    
-    display_name = " ".join(word.capitalize() for word in name.split())
+    # Generate tvg-id (lowercase, no spaces)
     tvg_id = re.sub(r'\s+', '', name.lower()) + '.uk'
+    
+    # Specific common replacements
+    replacements = {
+        'supersport': 'ss',
+        'premier league': 'epl',
+        'main event': '',
+        'grandstand': '',
+        'dstv': '',
+        'tnt': 'bt'  # Standardize TNT to BT
+    }
+    for old, new in replacements.items():
+        name = name.replace(old, new)
+    
+    name = re.sub(r'\s+', ' ', name).strip()
+    display_name = " ".join([word.capitalize() for word in name.split()])
     
     return display_name, tvg_id
 
-def load_epg_map(epg_path):
+def load_epg_map(epg_path="input/guide.xml"):
     """Create mapping from EPG data: {display-name: tvg-id}"""
     epg_map = {}
     try:
@@ -72,23 +96,6 @@ def load_epg_map(epg_path):
     except Exception as e:
         logger.error(f"EPG parsing error: {e}")
     return epg_map
-
-def load_epg_display_names(epg_path="input/guide.xml"):
-    """Extract a list of display names from EPG XML."""
-    try:
-        tree = ET.parse(epg_path)
-        root = tree.getroot()
-        display_names = set()
-
-        for channel in root.findall("channel"):
-            for name in channel.findall("display-name"):
-                if name.text:
-                    display_names.add(name.text.strip())
-
-        return list(display_names)
-    except Exception as e:
-        print(f"WARNING: Failed to parse EPG: {e}")
-        return []
 
 def parse_m3u_entry(extinf_line):
     """Parse EXTINF line with all attributes"""
@@ -122,65 +129,8 @@ def parse_m3u_entry(extinf_line):
 def parse_m3u_files(m3u_folder="input/"):
     """Parse M3U files with EPG integration and dynamic channel mapping"""
     entries = []
-    
-    # Load EPG data first
     epg_map = load_epg_map(os.path.join(m3u_folder, "guide.xml"))
     
-    # Load and parse channels.txt
-    channel_variations = defaultdict(list)
-    try:
-        with open(os.path.join(m3u_folder, "channels.txt"), "r") as f:
-            current_group = "General"
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                if line.startswith("#"):
-                    current_group = line[1:].strip()
-                    continue
-                
-                # Find matching EPG ID if available
-                epg_id = None
-                epg_name = None
-                for epg_key in epg_map.keys():
-                    if fuzz.ratio(line.lower(), epg_key.lower()) > 85:
-                        epg_id = epg_map[epg_key]
-                        epg_name = epg_key
-                        break
-                
-                if epg_id:
-                    channel_variations[line] = {
-                        'canonical': line,
-                        'epg_id': epg_id,
-                        'epg_name': epg_name,
-                        'variations': [line]
-                    }
-                    logger.debug(f"Mapped channel '{line}' to EPG ID '{epg_id}'")
-                else:
-                    channel_variations[line] = {
-                        'canonical': line,
-                        'epg_id': None,
-                        'variations': [line]
-                    }
-                    logger.debug(f"No EPG match for channel '{line}'")
-                
-                # Generate common variations
-                no_prefix = re.sub(r'^(UK|US|DSTV|EPL)\s*[:]?\s*', '', line, flags=re.I)
-                if no_prefix != line:
-                    channel_variations[line]['variations'].append(no_prefix)
-                
-                if 'Sky Sports' in line:
-                    channel_variations[line]['variations'].append(line.replace('Sky Sports', 'SS'))
-                
-                if re.search(r'\d+$', line):
-                    channel_variations[line]['variations'].append(re.sub(r'\s*\d+$', '', line))
-                    
-    except FileNotFoundError:
-        logger.info("channels.txt not found - using EPG and basic normalization only")
-    except Exception as e:
-        logger.error(f"Error reading channels.txt: {e}")
-
     # Parse M3U files
     for m3u_file in glob.glob(f"{m3u_folder}/*.m3u"):
         try:
@@ -205,40 +155,18 @@ def parse_m3u_files(m3u_folder="input/"):
     for entry in entries:
         try:
             original_name = entry['name']
-            matched_channel = None
+            display_name, tvg_id = normalize_name(original_name)
             
-            # Try to match against all known channel variations
-            for channel_data in channel_variations.values():
-                for variant in channel_data['variations']:
-                    if fuzz.partial_ratio(original_name.lower(), variant.lower()) > 80:
-                        matched_channel = channel_data
-                        break
-                if matched_channel:
+            # Try to match with EPG
+            epg_match = None
+            for epg_name, epg_tvg_id in epg_map.items():
+                if fuzz.ratio(display_name.lower(), epg_name.lower()) > 85:
+                    epg_match = (epg_name, epg_tvg_id)
                     break
             
-            if matched_channel:
-                if matched_channel['epg_id']:
-                    display_name = matched_channel['epg_name']
-                    tvg_id = matched_channel['epg_id']
-                    logger.debug(f"Matched '{original_name}' to EPG channel '{display_name}'")
-                else:
-                    display_name = matched_channel['canonical']
-                    tvg_id = generate_tvg_id(display_name)
-                    logger.debug(f"Matched '{original_name}' to configured channel '{display_name}'")
-            else:
-                # Fallback to EPG matching
-                epg_match = None
-                for epg_name, epg_id in epg_map.items():
-                    if fuzz.partial_ratio(original_name.lower(), epg_name.lower()) > 75:
-                        epg_match = (epg_name, epg_id)
-                        break
-                
-                if epg_match:
-                    display_name, tvg_id = epg_match
-                    logger.debug(f"EPG matched '{original_name}' to '{display_name}'")
-                else:
-                    display_name, tvg_id = normalize_name(original_name)
-                    logger.debug(f"No match found for '{original_name}', normalized to '{display_name}'")
+            if epg_match:
+                display_name, tvg_id = epg_match
+                logger.debug(f"EPG matched '{original_name}' to '{display_name}'")
             
             entry.update({
                 'canonical_name': display_name,
@@ -256,23 +184,12 @@ def parse_m3u_files(m3u_folder="input/"):
     logger.info(f"Successfully processed {len(grouped)} channel groups")
     return {"channels": grouped}
 
-def fuzzy_match(channel_name, pattern):
-    """Check if channel name matches a pattern with fuzzy matching"""
-    channel_clean = re.sub(r'[^a-z0-9]', '', channel_name.lower())
-    pattern_clean = re.sub(r'[^a-z0-9]', '', pattern.lower())
-    return fuzz.partial_ratio(channel_clean, pattern_clean) > 80
-
-def generate_tvg_id(channel_name):
-    """Fallback tvg-id generation when no EPG match exists"""
-    base_id = re.sub(r'[^a-z0-9]', '', channel_name.lower())
-    return f"{base_id}.fallback"
-
 def create_app():
     global checker
     config = parse_m3u_files("input/")
-    print("Loaded channels:")
+    logger.info("Loaded channels:")
     for name, urls in config["channels"].items():
-        print(f"- {name}: {len(urls)} stream(s)")
+        logger.info(f"- {name}: {len(urls)} stream(s)")
 
     checker = StreamChecker(config)
 
@@ -291,10 +208,10 @@ def create_app():
                 continue
                 
             extinf = (f'#EXTINF:-1 tvg-id="{entry["tvg-id"]}" '
-                    f'tvg-name="{entry["tvg-name"]}" '
-                    f'tvg-logo="{entry.get("tvg-logo", "")}" '
-                    f'group-title="{entry["group-title"]}",'
-                    f'{entry["canonical_name"]}')
+                     f'tvg-name="{entry["tvg-name"]}" '
+                     f'tvg-logo="{entry.get("tvg-logo", "")}" '
+                     f'group-title="{entry["group-title"]}",'
+                     f'{entry["canonical_name"]}')
             
             m3u += f"{extinf}\n{entry['url']}\n"
         
@@ -303,6 +220,7 @@ def create_app():
     @flask_app.route("/failover/<channel>")
     def failover_channel(channel):
         checker.mark_stream_failed(channel)
+        logger.info(f"Failover triggered for channel: {channel}")
         return f"Failover triggered for channel: {channel}\n"
     
     @flask_app.route("/epg.xml")
@@ -312,7 +230,7 @@ def create_app():
             tree = ET.parse("input/guide.xml")
             root = tree.getroot()
             
-            # Create mapping of tvg-id to canonical names from our config
+            # Create mapping of tvg-id to canonical names
             name_map = {
                 entry['tvg-id']: entry['canonical_name']
                 for entries in checker.config["channels"].values()
@@ -332,11 +250,10 @@ def create_app():
             return Response(epg_data, mimetype="application/xml")
             
         except Exception as e:
-            print(f"EPG modification error: {e}")
+            logger.error(f"EPG modification error: {e}")
             return Response("# Error processing EPG", status=500)
 
     return flask_app
-
 
 # Used by Gunicorn
 app = create_app()
