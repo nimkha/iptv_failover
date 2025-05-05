@@ -9,7 +9,7 @@ import re
 import xml.etree.ElementTree as ET
 import os
 
-FUZZY_MATCH_THRESHOLD = 80  # similarity threshold
+FUZZY_MATCH_THRESHOLD = 70  # similarity threshold
 
 def auto_reload_m3u(interval=172800):  # every 48 hour
     while True:
@@ -19,18 +19,25 @@ def auto_reload_m3u(interval=172800):  # every 48 hour
         time.sleep(interval)
 
 def normalize_name(name):
-    """Normalize channel names with better case handling and pattern matching"""
+    """Normalize channel names while preserving main channel numbers"""
     if not name:
         return ""
         
     name = name.lower()
-    # Remove resolution/region tags (case-insensitive)
-    name = re.sub(r'(?i)\s*\(.*?\)|\[.*?\]', '', name) # Remove things in () or []
-    name = re.sub(r'(?i)\b(hd|fhd|uhd|4k|sd|uk|us|ca|au|de|pt|fr)\d*\b', '', name) # Remove quality + digit suffix
-    name = re.sub(r'(?i)\b(hd|fhd|uhd|4k|sd|uk|us|ca|au|de|pt|fr)\b', '', name) # Also remove any that don't have digits
-    name = re.sub(r'(?i)^(uk:|dstv:|epl\s?:|ss:|us:|pt:|ca:|es:|tr:|lb:)', '', name)
-    name = re.sub(r'[^\w\s]', '', name)  # Remove punctuation
+    
+    # Remove resolution/quality indicators and regional prefixes
+    name = re.sub(r'(?i)\s*\(.*?\)', '', name)  # Remove anything in parentheses
+    name = re.sub(r'(?i)\b(?:hd|fhd|uhd|4k|sd|uk|us|ca|au|de|pt|fr)\s*\d*\b', '', name)
+    name = re.sub(r'(?i)^(?:uk:|dstv:|epl\s?:|ss:|us:|pt:|ca:|es:|tr:|lb:|tnt\s?:|bt\s?:)', '', name)
+    
+    # Handle channel numbers - preserve main number but remove version numbers
+    # Example: "BT Sport 1 HD 2" → "bt sport 1"
+    name = re.sub(r'(?i)((?:bt|tnt|sky|ss|supersport)\s+(?:sports?\s+)?(\d+)).*', r'\1', name)
+    
+    # Clean up remaining special characters and spaces
+    name = re.sub(r'[^\w\s]', '', name)
     name = re.sub(r'\s+', ' ', name).strip()
+    
     return name
 
 def load_epg_display_names(epg_path="input/guide.xml"):
@@ -106,22 +113,23 @@ def parse_m3u_files(m3u_folder="input/"):
         best_match = None
         best_score = 0
 
-        # Try EPG matching first
+        # Try EPG matching first with lower threshold
         if norm_epg_names:
             result = process.extractOne(norm_name, norm_epg_names.keys(), 
-                                      scorer=fuzz.token_sort_ratio)
-            if result and result[1] >= FUZZY_MATCH_THRESHOLD:
+                                     scorer=fuzz.token_set_ratio)  # Changed to token_set_ratio
+            if result and result[1] >= 70:  # Lowered threshold
                 best_match = norm_epg_names[result[0]]
 
         # Fallback to cleaned version of current name
         if not best_match:
-            best_match = " ".join([word.capitalize() for word in norm_name.split()])
+            # Additional cleaning for sports channels
+            clean_name = norm_name
+            for term in ['live', 'football', 'match', 'stream']:
+                clean_name = clean_name.replace(term, '')
+            clean_name = re.sub(r'\s+', ' ', clean_name).strip()
+            best_match = " ".join([word.capitalize() for word in clean_name.split()])
 
-        # Preserve all original metadata in the grouped entry
-        # Ensure every entry has a URL
-        if 'url' not in entry:
-            continue
-            
+        # Preserve all original metadata
         grouped_entry = entry.copy()
         grouped_entry['canonical_name'] = best_match if best_match else norm_name
         grouped[grouped_entry['canonical_name']].append(grouped_entry)
@@ -148,22 +156,21 @@ def create_app():
         active_streams = checker.get_active_streams()
         
         for channel, entry in active_streams.items():
-            if not entry:  # Skip empty entries
+            if not entry:
                 continue
                 
-            # Handle case where entry might be a string (backward compatibility)
             if isinstance(entry, str):
                 m3u += f"#EXTINF:-1,{channel}\n{entry}\n"
             else:
-                # Safely handle the EXTINF line generation
+                # Use the canonical name for consistency
+                display_name = entry.get('canonical_name', channel)
                 extinf = entry.get('extinf')
                 if not extinf:
-                    # Fallback to generating a basic EXTINF line
                     extinf = (f'#EXTINF:-1 tvg-id="{entry.get("tvg-id", "")}" '
-                            f'tvg-name="{channel}" '
+                            f'tvg-name="{display_name}" '
                             f'tvg-logo="{entry.get("tvg-logo", "")}" '
                             f'group-title="{entry.get("group-title", "")}",'
-                            f'{channel}')
+                            f'{display_name}')
                 m3u += f"{extinf}\n{entry['url']}\n"
         
         return Response(m3u, mimetype="application/x-mpegURL")
