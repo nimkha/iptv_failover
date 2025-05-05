@@ -19,39 +19,40 @@ def auto_reload_m3u(interval=172800):  # every 48 hour
         time.sleep(interval)
 
 def normalize_name(name, epg_map=None):
-    """Normalize names with safe EPG matching"""
+    """Normalize names with proper prefix handling"""
     if not name:
-        return "Unknown", "unknown", "unknown"
+        return "Unknown", "unknown.uk", "Unknown"
     
     original = name
     name = name.lower()
     
+    # Extract prefix (UK, DSTV, EPL etc.)
+    prefix = ""
+    prefix_match = re.match(r'^(uk|dstv|epl|ss|tnt|bt)\s*[:]?\s*', name)
+    if prefix_match:
+        prefix = prefix_match.group(1).upper()
+        name = name[prefix_match.end():]
+    
     # Basic cleaning
-    name = re.sub(r'(?i)\s*\(.*?\)', '', name)
-    name = re.sub(r'(?i)\b(?:hd|fhd|uhd|4k|sd)\s*\d*\b', '', name)
-    name = re.sub(r'(?i)^(?:uk\s*:|dstv\s*:|epl\s*:|ss\s*:|us\s*:|pt\s*:|ca\s*:|es\s*:|tr\s*:|lb\s*:)', '', name)
-    name = re.sub(r'[^\w\s]', '', name)
+    name = re.sub(r'\s*\(.*?\)', '', name)  # Remove anything in parentheses
+    name = re.sub(r'\b(?:hd|fhd|uhd|4k|sd)\s*\d*\b', '', name)  # Remove quality
+    name = re.sub(r'[^\w\s]', '', name)  # Remove punctuation
     name = re.sub(r'\s+', ' ', name).strip()
     
-    # Try to match with EPG if available
-    if epg_map:
-        try:
-            # Get best match with score
-            best_match, score, key = process.extractOne(name, epg_map.keys(), scorer=fuzz.token_set_ratio)
-            if score >= 70:  # Good enough match
-                return epg_map[key][0], epg_map[key][1], name
-        except Exception as e:
-            print(f"EPG matching error for '{name}': {e}")
+    # Handle channel numbers (preserve main number)
+    name = re.sub(r'(?:\b(?:bt|tnt|sky|ss|supersport)\s+(?:sports?\s+)?(\d+).*', r'\1', name)
     
-    # Fallback normalization for unmatched channels
-    # Handle channel numbers
-    name = re.sub(r'(?i)((?:bt|tnt|sky|ss|supersport)\s+(?:sports?\s+)?(\d+)).*', r'\1\2', name)
+    # Build display name
     display_name = " ".join([word.capitalize() for word in name.split()])
+    if prefix:
+        display_name = f"{prefix} {display_name}"
     
-    # Generate tvg-id from normalized name
+    # Generate tvg-id
     tvg_id = re.sub(r'\s+', '', name.lower())
+    if prefix:
+        tvg_id = f"{prefix.lower()}{tvg_id}"
     if not tvg_id.endswith('.uk'):
-        tvg_id += '.uk'  # Default suffix
+        tvg_id += '.uk'
     
     return display_name, tvg_id, name
 
@@ -182,8 +183,13 @@ def create_app():
             if not entry:
                 continue
                 
+            # Ensure tvg-name is properly set
+            tvg_name = entry.get('tvg-name', '')
+            if not tvg_name or len(tvg_name) < 3:  # Fix cases like "UK:"
+                tvg_name = entry.get('canonical_name', channel)
+            
             extinf = (f"#EXTINF:-1 tvg-id=\"{entry['tvg-id']}\" "
-                    f"tvg-name=\"{entry['tvg-name']}\" "
+                    f"tvg-name=\"{tvg_name}\" "
                     f"tvg-logo=\"{entry.get('tvg-logo', '')}\" "
                     f"group-title=\"{entry['group-title']}\","
                     f"{entry['canonical_name']}")
@@ -196,6 +202,36 @@ def create_app():
     def failover_channel(channel):
         checker.mark_stream_failed(channel)
         return f"Failover triggered for channel: {channel}\n"
+    
+    @flask_app.route("/epg.xml")
+    def serve_modified_epg():
+        """Serve modified EPG with normalized display names"""
+        try:
+            tree = ET.parse("input/guide.xml")
+            root = tree.getroot()
+            
+            # Create mapping of tvg-id to canonical names from our config
+            name_map = {
+                entry['tvg-id']: entry['canonical_name']
+                for entries in checker.config["channels"].values()
+                for entry in entries
+                if 'tvg-id' in entry
+            }
+            
+            # Update display names in EPG
+            for channel in root.findall(".//channel"):
+                tvg_id = channel.get("id")
+                if tvg_id in name_map:
+                    for display_name in channel.findall("display-name"):
+                        display_name.text = name_map[tvg_id]
+            
+            # Return modified EPG
+            epg_data = ET.tostring(root, encoding='utf-8', method='xml')
+            return Response(epg_data, mimetype="application/xml")
+            
+        except Exception as e:
+            print(f"EPG modification error: {e}")
+            return Response("# Error processing EPG", status=500)
 
     return flask_app
 
