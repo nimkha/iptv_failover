@@ -18,27 +18,49 @@ def auto_reload_m3u(interval=172800):  # every 48 hour
         print("[M3U Reloaded]")
         time.sleep(interval)
 
-def normalize_name(name):
-    """Normalize channel names while preserving main channel numbers"""
+def normalize_name(name, epg_map=None):
+    """Normalize names with EPG matching priority"""
     if not name:
-        return ""
-        
+        return "", "", ""
+    
+    original = name
     name = name.lower()
     
-    # Remove resolution/quality indicators and regional prefixes
+    # Basic cleaning
     name = re.sub(r'(?i)\s*\(.*?\)', '', name)  # Remove anything in parentheses
-    name = re.sub(r'(?i)\b(?:hd|fhd|uhd|4k|sd|uk|us|ca|au|de|pt|fr)\s*\d*\b', '', name)
-    name = re.sub(r'(?i)^(?:uk:|dstv:|epl\s?:|ss:|us:|pt:|ca:|es:|tr:|lb:|tnt\s?:|bt\s?:)', '', name)
-    
-    # Handle channel numbers - preserve main number but remove version numbers
-    # Example: "BT Sport 1 HD 2" → "bt sport 1"
-    name = re.sub(r'(?i)((?:bt|tnt|sky|ss|supersport)\s+(?:sports?\s+)?(\d+)).*', r'\1', name)
-    
-    # Clean up remaining special characters and spaces
-    name = re.sub(r'[^\w\s]', '', name)
+    name = re.sub(r'(?i)\b(?:hd|fhd|uhd|4k|sd)\s*\d*\b', '', name)  # Remove quality
+    name = re.sub(r'(?i)^(?:uk\s*:|dstv\s*:|epl\s*:|ss\s*:|us\s*:|pt\s*:|ca\s*:|es\s*:|tr\s*:|lb\s*:)', '', name)
+    name = re.sub(r'[^\w\s]', '', name)  # Remove punctuation
     name = re.sub(r'\s+', ' ', name).strip()
     
-    return name
+    # Try to match with EPG first
+    if epg_map:
+        best_match, score, key = process.extractOne(name, epg_map.keys(), scorer=fuzz.token_set_ratio)
+        if score >= 70:  # Good enough match
+            return epg_map[key], key, name  # (display_name, tvg-id, normalized_name)
+    
+    # Fallback normalization
+    name = re.sub(r'(?i)((?:bt|tnt|sky|ss|supersport)\s+(?:sports?\s+)?(\d+)).*', r'\1\2', name)
+    display_name = " ".join([word.capitalize() for word in name.split()])
+    tvg_id = re.sub(r'\s+', '', name.lower()) + ".uk"  # Default fallback ID
+    
+    return display_name, tvg_id, name
+
+def load_epg_map(epg_path="input/guide.xml"):
+    """Create mapping from EPG data: {normalized_name: (display_name, tvg-id)}"""
+    epg_map = {}
+    try:
+        tree = ET.parse(epg_path)
+        for channel in tree.findall(".//channel"):
+            tvg_id = channel.get("id", "")
+            for name in channel.findall("display-name"):
+                if name.text:
+                    norm_name = name.text.lower()
+                    norm_name = re.sub(r'[^\w\s]', '', norm_name)
+                    epg_map[norm_name] = (name.text.strip(), tvg_id)
+    except Exception as e:
+        print(f"EPG parsing error: {e}")
+    return epg_map
 
 def load_epg_display_names(epg_path="input/guide.xml"):
     """Extract a list of display names from EPG XML."""
@@ -88,6 +110,7 @@ def parse_m3u_entry(extinf_line):
 
 def parse_m3u_files(m3u_folder="input/"):
     entries = []  # Will store dicts instead of tuples
+    epg_map = load_epg_map(os.path.join(m3u_folder, "guide.xml"))
 
     for m3u_file in glob.glob(f"{m3u_folder}/*.m3u"):
         with open(m3u_file, "r", encoding="utf-8") as f:
@@ -103,37 +126,20 @@ def parse_m3u_files(m3u_folder="input/"):
                 entries.append(current_entry)
                 current_entry = None
 
-    # Grouping logic
     grouped = defaultdict(list)
-    epg_names = load_epg_display_names(os.path.join(m3u_folder, "guide.xml"))
-    norm_epg_names = {normalize_name(name): name for name in epg_names}
-
     for entry in entries:
-        norm_name = normalize_name(entry['name'])
-        best_match = None
-        best_score = 0
-
-        # Try EPG matching first with lower threshold
-        if norm_epg_names:
-            result = process.extractOne(norm_name, norm_epg_names.keys(), 
-                                     scorer=fuzz.token_set_ratio)  # Changed to token_set_ratio
-            if result and result[1] >= 70:  # Lowered threshold
-                best_match = norm_epg_names[result[0]]
-
-        # Fallback to cleaned version of current name
-        if not best_match:
-            # Additional cleaning for sports channels
-            clean_name = norm_name
-            for term in ['live', 'football', 'match', 'stream']:
-                clean_name = clean_name.replace(term, '')
-            clean_name = re.sub(r'\s+', ' ', clean_name).strip()
-            best_match = " ".join([word.capitalize() for word in clean_name.split()])
-
-        # Preserve all original metadata
-        grouped_entry = entry.copy()
-        grouped_entry['canonical_name'] = best_match if best_match else norm_name
-        grouped[grouped_entry['canonical_name']].append(grouped_entry)
-
+        display_name, tvg_id, norm_name = normalize_name(entry['name'], epg_map)
+        
+        # Update entry with normalized values
+        entry.update({
+            'canonical_name': display_name,
+            'tvg-id': entry.get('tvg-id') or tvg_id,
+            'tvg-name': entry.get('tvg-name') or display_name,
+            'group-title': entry.get('group-title') or display_name
+        })
+        
+        grouped[display_name].append(entry)
+    
     return {"channels": grouped}
 
 def create_app():
@@ -159,19 +165,13 @@ def create_app():
             if not entry:
                 continue
                 
-            if isinstance(entry, str):
-                m3u += f"#EXTINF:-1,{channel}\n{entry}\n"
-            else:
-                # Use the canonical name for consistency
-                display_name = entry.get('canonical_name', channel)
-                extinf = entry.get('extinf')
-                if not extinf:
-                    extinf = (f'#EXTINF:-1 tvg-id="{entry.get("tvg-id", "")}" '
-                            f'tvg-name="{display_name}" '
-                            f'tvg-logo="{entry.get("tvg-logo", "")}" '
-                            f'group-title="{entry.get("group-title", "")}",'
-                            f'{display_name}')
-                m3u += f"{extinf}\n{entry['url']}\n"
+            extinf = (f"#EXTINF:-1 tvg-id=\"{entry['tvg-id']}\" "
+                    f"tvg-name=\"{entry['tvg-name']}\" "
+                    f"tvg-logo=\"{entry.get('tvg-logo', '')}\" "
+                    f"group-title=\"{entry['group-title']}\","
+                    f"{entry['canonical_name']}")
+            
+            m3u += f"{extinf}\n{entry['url']}\n"
         
         return Response(m3u, mimetype="application/x-mpegURL")
 
