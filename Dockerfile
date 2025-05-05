@@ -4,6 +4,11 @@ FROM python:3.11
 # Set workdir
 WORKDIR /app
 
+# Ensure logs directory exists
+RUN mkdir -p /logs
+# Set log file permissions
+RUN chmod a+rw /logs
+
 # Install system deps (if any)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \

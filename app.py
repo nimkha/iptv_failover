@@ -8,8 +8,24 @@ import threading
 import re
 import xml.etree.ElementTree as ET
 import os
+import logging
+from logging.handlers import RotatingFileHandler
 
 FUZZY_MATCH_THRESHOLD = 70  # similarity threshold
+
+# Configure logging
+def setup_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            RotatingFileHandler('logs/iptv_failover.log', maxBytes=1000000, backupCount=3),
+            logging.StreamHandler()
+        ]
+    )
+
+setup_logging()
+logger = logging.getLogger(__name__)
 
 def auto_reload_m3u(interval=172800):  # every 48 hour
     while True:
@@ -52,8 +68,9 @@ def load_epg_map(epg_path):
             for name in channel.findall("display-name"):
                 if name.text:
                     epg_map[name.text.strip()] = tvg_id
+        logger.info(f"Loaded {len(epg_map)} EPG mappings")
     except Exception as e:
-        print(f"EPG parsing error: {e}")
+        logger.error(f"EPG parsing error: {e}")
     return epg_map
 
 def load_epg_display_names(epg_path="input/guide.xml"):
@@ -132,7 +149,6 @@ def parse_m3u_files(m3u_folder="input/"):
                         epg_name = epg_key
                         break
                 
-                # Store with EPG data if found
                 if epg_id:
                     channel_variations[line] = {
                         'canonical': line,
@@ -140,12 +156,14 @@ def parse_m3u_files(m3u_folder="input/"):
                         'epg_name': epg_name,
                         'variations': [line]
                     }
+                    logger.debug(f"Mapped channel '{line}' to EPG ID '{epg_id}'")
                 else:
                     channel_variations[line] = {
                         'canonical': line,
                         'epg_id': None,
                         'variations': [line]
                     }
+                    logger.debug(f"No EPG match for channel '{line}'")
                 
                 # Generate common variations
                 no_prefix = re.sub(r'^(UK|US|DSTV|EPL)\s*[:]?\s*', '', line, flags=re.I)
@@ -159,17 +177,18 @@ def parse_m3u_files(m3u_folder="input/"):
                     channel_variations[line]['variations'].append(re.sub(r'\s*\d+$', '', line))
                     
     except FileNotFoundError:
-        print("Note: channels.txt not found - using EPG and basic normalization only")
+        logger.info("channels.txt not found - using EPG and basic normalization only")
     except Exception as e:
-        print(f"Error reading channels.txt: {e}")
+        logger.error(f"Error reading channels.txt: {e}")
 
     # Parse M3U files
     for m3u_file in glob.glob(f"{m3u_folder}/*.m3u"):
         try:
             with open(m3u_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
+            logger.info(f"Processing M3U file: {m3u_file}")
         except Exception as e:
-            print(f"Error reading {m3u_file}: {e}")
+            logger.error(f"Error reading {m3u_file}: {e}")
             continue
 
         current_entry = None
@@ -198,13 +217,14 @@ def parse_m3u_files(m3u_folder="input/"):
                     break
             
             if matched_channel:
-                # Use EPG data if available
                 if matched_channel['epg_id']:
                     display_name = matched_channel['epg_name']
                     tvg_id = matched_channel['epg_id']
+                    logger.debug(f"Matched '{original_name}' to EPG channel '{display_name}'")
                 else:
                     display_name = matched_channel['canonical']
                     tvg_id = generate_tvg_id(display_name)
+                    logger.debug(f"Matched '{original_name}' to configured channel '{display_name}'")
             else:
                 # Fallback to EPG matching
                 epg_match = None
@@ -215,8 +235,10 @@ def parse_m3u_files(m3u_folder="input/"):
                 
                 if epg_match:
                     display_name, tvg_id = epg_match
+                    logger.debug(f"EPG matched '{original_name}' to '{display_name}'")
                 else:
                     display_name, tvg_id = normalize_name(original_name)
+                    logger.debug(f"No match found for '{original_name}', normalized to '{display_name}'")
             
             entry.update({
                 'canonical_name': display_name,
@@ -228,9 +250,10 @@ def parse_m3u_files(m3u_folder="input/"):
             grouped[display_name].append(entry)
             
         except Exception as e:
-            print(f"Error processing entry {original_name}: {e}")
+            logger.error(f"Error processing entry {original_name}: {e}")
             continue
     
+    logger.info(f"Successfully processed {len(grouped)} channel groups")
     return {"channels": grouped}
 
 def fuzzy_match(channel_name, pattern):
