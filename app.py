@@ -41,44 +41,14 @@ def auto_reload_m3u(interval=172800):  # every 48 hours
         time.sleep(interval)
 
 def normalize_name(name):
-    """Normalize channel names while preserving main channel numbers"""
-    if not name:
-        return "Unknown", "unknown.uk"
-    
-    original = name
+    """Normalize channel names by removing resolution tags, region suffixes, punctuation, and excess spaces."""
     name = name.lower()
-    
-    # Remove resolution/quality indicators and regional prefixes
-    name = re.sub(r'(?i)\s*\(.*?\)', '', name)  # Remove anything in parentheses
-    name = re.sub(r'(?i)\b(?:hd|fhd|uhd|4k|sd)\s*\d*\b', '', name)
-    name = re.sub(r'(?i)^(?:uk\s*:|dstv\s*:|epl\s*:|ss\s*:|us\s*:|pt\s*:|ca\s*:|es\s*:|tr\s*:|lb\s*:)', '', name)
-    
-    # Handle channel numbers - preserve main number but remove version numbers
-    name = re.sub(r'(?i)((?:bt|tnt|sky|ss|supersport)\s+(?:sports?\s+)?(\d+)).*', r'\1\2', name)
-    
-    # Clean up remaining special characters and spaces
-    name = re.sub(r'[^\w\s]', '', name)
+    name = re.sub(r'\s*\(.*?\)|\[.*?\]', '', name)  # Remove content within parentheses or brackets 
+    name = re.sub(r'\b(hd|fhd|uhd|4k|sd|uk|us|ca|au|de|pt|fr)\b', '', name)
+    name = re.sub(r'^(uk:|us:|ca:|pt:|es:|tr:|lb:)', '', name)
+    name = re.sub(r'[^\w\s]', '', name)  # Remove punctuation
     name = re.sub(r'\s+', ' ', name).strip()
-    
-    # Generate tvg-id (lowercase, no spaces)
-    tvg_id = re.sub(r'\s+', '', name.lower()) + '.uk'
-    
-    # Specific common replacements
-    replacements = {
-        'supersport': 'ss',
-        'premier league': 'epl',
-        'main event': '',
-        'grandstand': '',
-        'dstv': '',
-        'tnt': 'bt'  # Standardize TNT to BT
-    }
-    for old, new in replacements.items():
-        name = name.replace(old, new)
-    
-    name = re.sub(r'\s+', ' ', name).strip()
-    display_name = " ".join([word.capitalize() for word in name.split()])
-    
-    return display_name, tvg_id
+    return name
 
 def load_epg_map(epg_path="input/guide.xml"):
     """Create mapping from EPG data: {display-name: tvg-id}"""
@@ -97,101 +67,101 @@ def load_epg_map(epg_path="input/guide.xml"):
         logger.error(f"EPG parsing error: {e}")
     return epg_map
 
-def parse_m3u_entry(extinf_line):
-    """Parse EXTINF line with all attributes"""
-    entry = {
-        'tvg-id': '',
-        'tvg-name': '',
-        'tvg-logo': '',
-        'group-title': '',
-        'name': '',
-        'extinf': extinf_line
-    }
+# def parse_m3u_entry(extinf_line):
+#     """Parse EXTINF line with all attributes"""
+#     entry = {
+#         'tvg-id': '',
+#         'tvg-name': '',
+#         'tvg-logo': '',
+#         'group-title': '',
+#         'name': '',
+#         'extinf': extinf_line
+#     }
     
-    # Extract attributes
-    attr_match = re.search(r'#EXTINF:-1\s+(.*?),', extinf_line)
-    if attr_match:
-        attrs = attr_match.group(1)
-        for attr in attrs.split(' '):
-            if '=' in attr:
-                key, val = attr.split('=', 1)
-                val = val.strip('"')
-                if key in entry:
-                    entry[key] = val
+#     # Extract attributes
+#     attr_match = re.search(r'#EXTINF:-1\s+(.*?),', extinf_line)
+#     if attr_match:
+#         attrs = attr_match.group(1)
+#         for attr in attrs.split(' '):
+#             if '=' in attr:
+#                 key, val = attr.split('=', 1)
+#                 val = val.strip('"')
+#                 if key in entry:
+#                     entry[key] = val
     
-    # Extract display name (after last comma)
-    name_match = extinf_line.rsplit(',', 1)
-    if len(name_match) > 1:
-        entry['name'] = name_match[1].strip()
+#     # Extract display name (after last comma)
+#     name_match = extinf_line.rsplit(',', 1)
+#     if len(name_match) > 1:
+#         entry['name'] = name_match[1].strip()
     
-    return entry
+#     return entry
 
 def parse_m3u_files(m3u_folder="input/"):
-    """Parse M3U files with EPG integration and dynamic channel mapping"""
-    entries = []
-    epg_map = load_epg_map(os.path.join(m3u_folder, "guide.xml"))
-    
-    # Parse M3U files
+    channel_entries = []
+
     for m3u_file in glob.glob(f"{m3u_folder}/*.m3u"):
-        try:
-            with open(m3u_file, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-            logger.info(f"Processing M3U file: {m3u_file}")
-        except Exception as e:
-            logger.error(f"Error reading {m3u_file}: {e}")
-            continue
+        with open(m3u_file, "r", encoding="utf-8") as f:
+            lines = f.readlines()
 
-        current_entry = None
-        for line in lines:
-            line = line.strip()
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
             if line.startswith("#EXTINF"):
-                current_entry = parse_m3u_entry(line)
-            elif line.startswith("http") and current_entry:
-                current_entry['url'] = line
-                entries.append(current_entry)
-                current_entry = None
+                # Extract attributes from the EXTINF line
+                attrs = {}
+                match = re.search(r'#EXTINF:-1\s+(.*?)\s*,\s*(.*)', line)
+                if match:
+                    attr_str, display_name = match.groups()
+                    # Extract key="value" pairs
+                    for attr_match in re.finditer(r'(\w+?)="(.*?)"', attr_str):
+                        key, value = attr_match.groups()
+                        attrs[key] = value
+                    attrs['display_name'] = display_name
 
+                # The next line should be the URL
+                i += 1
+                if i < len(lines):
+                    url = lines[i].strip()
+                    attrs['url'] = url
+                    channel_entries.append(attrs)
+            i += 1
+
+    return channel_entries
+
+def group_channels(channel_entries):
     grouped = defaultdict(list)
-    for entry in entries:
-        try:
-            original_name = entry['name']
-            display_name, tvg_id = normalize_name(original_name)
-            
-            # Try to match with EPG
-            epg_match = None
-            for epg_name, epg_tvg_id in epg_map.items():
-                if fuzz.ratio(display_name.lower(), epg_name.lower()) > 85:
-                    epg_match = (epg_name, epg_tvg_id)
-                    break
-            
-            if epg_match:
-                display_name, tvg_id = epg_match
-                logger.debug(f"EPG matched '{original_name}' to '{display_name}'")
-            
-            entry.update({
-                'canonical_name': display_name,
-                'tvg-id': entry.get('tvg-id', tvg_id),
-                'tvg-name': display_name,
-                'group-title': display_name
-            })
-            
-            grouped[display_name].append(entry)
-            
-        except Exception as e:
-            logger.error(f"Error processing entry {original_name}: {e}")
-            continue
-    
-    logger.info(f"Successfully processed {len(grouped)} channel groups")
-    return {"channels": grouped}
+    for entry in channel_entries:
+        norm_name = normalize_name(entry.get('display_name', ''))
+        grouped[norm_name].append(entry)
+    return grouped
+
+def generate_playlist(grouped_channels):
+    playlist = "#EXTM3U\n"
+    for group in grouped_channels.values():
+        for channel in group:
+            extinf = f'#EXTINF:-1'
+            if 'tvg-id' in channel:
+                extinf += f' tvg-id="{channel["tvg-id"]}"'
+            if 'tvg-name' in channel:
+                extinf += f' tvg-name="{channel["tvg-name"]}"'
+            if 'tvg-logo' in channel:
+                extinf += f' tvg-logo="{channel["tvg-logo"]}"'
+            if 'group-title' in channel:
+                extinf += f' group-title="{channel["group-title"]}"'
+            extinf += f',{channel["display_name"]}\n'
+            playlist += f'{extinf}{channel["url"]}\n'
+    return playlist
 
 def create_app():
     global checker
-    config = parse_m3u_files("input/")
+    entries = parse_m3u_files("input/")
+    grouped_channels = group_channels(entries)
+
     logger.info("Loaded channels:")
-    for name, urls in config["channels"].items():
+    for name, urls in grouped_channels.items():
         logger.info(f"- {name}: {len(urls)} stream(s)")
 
-    checker = StreamChecker(config)
+    checker = StreamChecker({"channels": grouped_channels})
 
     # Start automatic health monitor
     threading.Thread(target=checker.background_monitor, daemon=True).start()
