@@ -67,35 +67,6 @@ def load_epg_map(epg_path="input/guide.xml"):
         logger.error(f"EPG parsing error: {e}")
     return epg_map
 
-# def parse_m3u_entry(extinf_line):
-#     """Parse EXTINF line with all attributes"""
-#     entry = {
-#         'tvg-id': '',
-#         'tvg-name': '',
-#         'tvg-logo': '',
-#         'group-title': '',
-#         'name': '',
-#         'extinf': extinf_line
-#     }
-    
-#     # Extract attributes
-#     attr_match = re.search(r'#EXTINF:-1\s+(.*?),', extinf_line)
-#     if attr_match:
-#         attrs = attr_match.group(1)
-#         for attr in attrs.split(' '):
-#             if '=' in attr:
-#                 key, val = attr.split('=', 1)
-#                 val = val.strip('"')
-#                 if key in entry:
-#                     entry[key] = val
-    
-#     # Extract display name (after last comma)
-#     name_match = extinf_line.rsplit(',', 1)
-#     if len(name_match) > 1:
-#         entry['name'] = name_match[1].strip()
-    
-#     return entry
-
 def parse_m3u_files(m3u_folder="input/"):
     channel_entries = []
 
@@ -124,6 +95,9 @@ def parse_m3u_files(m3u_folder="input/"):
                     url = lines[i].strip()
                     attrs['url'] = url
                     channel_entries.append(attrs)
+                    tvg_id = epg_map.get(attrs.get('display_name', '').strip())
+                    if tvg_id:
+                        attrs['tvg-id'] = tvg_id
             i += 1
 
     return channel_entries
@@ -177,11 +151,16 @@ def create_app():
             if not entry:
                 continue
                 
-            extinf = (f'#EXTINF:-1 tvg-id="{entry["tvg-id"]}" '
-                     f'tvg-name="{entry["tvg-name"]}" '
-                     f'tvg-logo="{entry.get("tvg-logo", "")}" '
-                     f'group-title="{entry["group-title"]}",'
-                     f'{entry["canonical_name"]}')
+            tvg_id = entry.get("tvg-id", "")
+            tvg_name = entry.get("tvg-name", entry.get("canonical_name", ""))
+            tvg_logo = entry.get("tvg-logo", "")
+            group_title = entry.get("group-title", "")
+
+            extinf = (f'#EXTINF:-1 tvg-id="{tvg_id}" '
+                    f'tvg-name="{tvg_name}" '
+                    f'tvg-logo="{tvg_logo}" '
+                    f'group-title="{group_title}",'
+                    f'{tvg_name}')
             
             m3u += f"{extinf}\n{entry['url']}\n"
         
