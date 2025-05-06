@@ -69,6 +69,7 @@ def load_epg_map(epg_path="input/guide.xml"):
 
 def parse_m3u_files(m3u_folder="input/"):
     channel_entries = []
+    epg_map = load_epg_map()
 
     for m3u_file in glob.glob(f"{m3u_folder}/*.m3u"):
         with open(m3u_file, "r", encoding="utf-8") as f:
