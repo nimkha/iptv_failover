@@ -180,8 +180,17 @@ class StreamChecker:
                 # Using a common, recent User-Agent
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
-            response = requests.get(url, headers=headers, timeout=5, stream=True)
-            return response.status_code in [200, 301, 302]
+            # Increased timeout to 10 seconds
+            response = requests.get(url, headers=headers, timeout=10, stream=True)
+            
+            if response.status_code in [200, 301, 302]:
+                return True
+            else:
+                logger.debug(f"Stream check for URL {url} returned non-OK status: {response.status_code}")
+                return False
+        except requests.exceptions.Timeout:
+            logger.debug(f"Stream check timed out for URL {url} (10s)")
+            return False
         except Exception as e:
-            logger.debug(f"[Monitor] Stream check failed for URL {url}: {str(e)}")
+            logger.debug(f"Stream check failed for URL {url} with exception: {str(e)}")
             return False
