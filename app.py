@@ -50,6 +50,16 @@ def normalize_name(name):
     name = re.sub(r'^(uk:|us:|ca:|pt:|es:|tr:|lb:)', '', name)
     name = re.sub(r'[^\w\s]', '', name)  # Remove punctuation
     name = re.sub(r'\s+', ' ', name).strip()
+
+    # Iteratively remove trailing numbers if they appear to be stream indices
+    # following another number. e.g., "channel name 1 2" -> "channel name 1".
+    # This handles cases like "bt sport 1 1" -> "bt sport 1".
+    previous_name_state = None
+    while name != previous_name_state:
+        previous_name_state = name
+        # Regex: Matches a string ending with "<text><space><digits><space><digits>"
+        # and replaces it with "<text><space><digits>"
+        name = re.sub(r'^(.*\s\d+)\s\d+$', r'\1', name)
     return name
 
 def load_epg_map(epg_path="input/guide.xml"):
