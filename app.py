@@ -199,24 +199,43 @@ def create_app():
             if not entry:
                 continue
 
-            tvg_id = entry.get("tvg-id", "")
-            # Use canonical_name (which is group_name) for tvg-name and display,
-            # but allow original M3U tvg-name to override if present.
-            canonical_name = entry.get('canonical_name', group_name)
-            tvg_name_attr = entry.get("tvg-name", canonical_name)
-            tvg_logo = entry.get("tvg-logo", "")
-            group_title_attr = entry.get("group-title", "")
+            current_tvg_id = entry.get("tvg-id", "")
+
+            # Determine the best possible display name for the channel
+            # 1. Start with the canonical_name (normalized name from parsing, should align with group_name)
+            name_for_display_output = entry.get('canonical_name', group_name)
+
+            # 2. If normalized name is empty, fall back to the original M3U display_name for this stream
+            if not name_for_display_output:
+                name_for_display_output = entry.get('display_name', '') # Original name from M3U
+
+            # 3. If still empty, fall back to its tvg-id if available
+            if not name_for_display_output:
+                name_for_display_output = current_tvg_id
+
+            # 4. Absolute fallback if all else fails (e.g., no tvg-id, display_name was empty/stripped)
+            if not name_for_display_output:
+                name_for_display_output = f"Unnamed Channel {channel_number}"
+
+            # Determine the tvg-name attribute value for the #EXTINF line
+            # Prioritize tvg-name from original M3U for this stream, then the determined name_for_display_output
+            final_tvg_name_attribute = entry.get("tvg-name") # Get original tvg-name from M3U attributes
+            if final_tvg_name_attribute is None or final_tvg_name_attribute == "": # If missing or explicitly empty
+                final_tvg_name_attribute = name_for_display_output
+
+            current_tvg_logo = entry.get("tvg-logo", "")
+            current_group_title = entry.get("group-title", "")
 
             extinf_parts = [f'#EXTINF:-1 tvg-chno="{channel_number}"']
-            if tvg_id:
-                extinf_parts.append(f'tvg-id="{tvg_id}"')
-            extinf_parts.append(f'tvg-name="{tvg_name_attr}"')
-            if tvg_logo:
-                extinf_parts.append(f'tvg-logo="{tvg_logo}"')
-            if group_title_attr:
-                extinf_parts.append(f'group-title="{group_title_attr}"')
+            if current_tvg_id:
+                extinf_parts.append(f'tvg-id="{current_tvg_id}"')
+            extinf_parts.append(f'tvg-name="{final_tvg_name_attribute}"') # Always include tvg-name
+            if current_tvg_logo: # Only add if non-empty
+                extinf_parts.append(f'tvg-logo="{current_tvg_logo}"')
+            if current_group_title: # Only add if non-empty
+                extinf_parts.append(f'group-title="{current_group_title}"')
 
-            extinf = " ".join(extinf_parts) + f',{canonical_name}' # Display name after comma
+            extinf = " ".join(extinf_parts) + f',{name_for_display_output}' # Use best determined name after comma
             m3u += f"{extinf}\n{entry['url']}\n"
             channel_number += 1
         return Response(m3u, mimetype="application/x-mpegURL")
