@@ -7,7 +7,7 @@ chmod 755 /app/logs
 
 # Run with preload
 exec gunicorn --bind 0.0.0.0:8000 \
-     --workers 4 \
+     --workers 1 \
      --threads 2 \
      --log-level info \
      --access-logfile - \
