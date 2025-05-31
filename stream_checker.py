@@ -2,6 +2,7 @@ import threading
 import time
 import requests
 import logging
+import concurrent.futures
 
 logger = logging.getLogger(__name__)
 
@@ -29,35 +30,63 @@ class StreamChecker:
         """
         with self.lock:
             active_working_streams = {}
-            for group_name, entries in self.stream_groups.items():
-                if not entries:
-                    logger.debug(f"Channel group '{group_name}' has no streams, skipping.")
-                    continue
+            # Adjust max_workers as needed. More workers can speed up checks for groups
+            # with many streams, but too many can also lead to resource issues or
+            # getting rate-limited. 10 is a reasonable default.
+            max_workers_for_check = 10
 
-                num_entries = len(entries)
-                # Get the starting index for the search, default to 0 if not set
-                start_index = self.current_index.get(group_name, 0)
-                if start_index >= num_entries: # Safety check if index is out of bounds
-                    start_index = 0
-                    self.current_index[group_name] = 0
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers_for_check) as executor:
+                for group_name, entries in self.stream_groups.items():
+                    if not entries:
+                        logger.debug(f"Channel group '{group_name}' has no streams, skipping.")
+                        continue
 
-                found_working_stream_for_group = False
-                for i in range(num_entries): # Iterate once through all streams in the group
-                    current_stream_index = (start_index + i) % num_entries
-                    stream_entry = entries[current_stream_index]
+                    num_entries = len(entries)
+                    start_index = self.current_index.get(group_name, 0)
+                    if start_index >= num_entries: # Safety check
+                        start_index = 0
+                        self.current_index[group_name] = 0
+
+                    # Maps a future object to the original index of the stream in the 'entries' list
+                    future_to_original_index = {
+                        executor.submit(self._is_stream_working, entry): i
+                        for i, entry in enumerate(entries)
+                    }
                     
-                    logger.debug(f"Checking stream {current_stream_index + 1}/{num_entries} for group '{group_name}': {stream_entry.get('url')}")
-                    if self._is_stream_working(stream_entry):
-                        logger.info(f"Found working stream for group '{group_name}': {stream_entry.get('url')} (index {current_stream_index})")
-                        active_working_streams[group_name] = stream_entry
-                        self.current_index[group_name] = current_stream_index # Update current_index to this working one
-                        found_working_stream_for_group = True
-                        break # Found a working stream for this group, move to the next group
+                    # Stores the check result (True/False) for each stream by its original index
+                    stream_check_results = [False] * num_entries
+
+                    for future in concurrent.futures.as_completed(future_to_original_index):
+                        original_idx = future_to_original_index[future]
+                        try:
+                            is_working = future.result()
+                            stream_check_results[original_idx] = is_working
+                            if is_working:
+                                logger.debug(f"Parallel check: Stream {entries[original_idx].get('url')} for group '{group_name}' (original index {original_idx}) is working.")
+                            # else: # No need to log non-working ones here if too verbose, _is_stream_working already logs
+                            #     logger.debug(f"Parallel check: Stream {entries[original_idx].get('url')} for group '{group_name}' (original index {original_idx}) is NOT working.")
+                        except Exception as exc:
+                            logger.error(f"Exception during parallel check for stream {entries[original_idx].get('url')}: {exc}")
+                            stream_check_results[original_idx] = False # Mark as not working on error
+
+                    # Now, select the first working stream based on the failover order
+                    chosen_stream_entry = None
+                    chosen_stream_original_index = -1
+
+                    for i in range(num_entries):
+                        # This is the index in 'entries' we'd try according to failover logic
+                        idx_to_try = (start_index + i) % num_entries
+                        if stream_check_results[idx_to_try]:
+                            chosen_stream_entry = entries[idx_to_try]
+                            chosen_stream_original_index = idx_to_try
+                            break 
+                    
+                    if chosen_stream_entry:
+                        logger.info(f"Selected working stream for group '{group_name}': {chosen_stream_entry.get('url')} (original index {chosen_stream_original_index}) after parallel checks.")
+                        active_working_streams[group_name] = chosen_stream_entry
+                        self.current_index[group_name] = chosen_stream_original_index
                     else:
-                        logger.warning(f"Stream {stream_entry.get('url')} for group '{group_name}' (index {current_stream_index}) is not working during active search.")
-                
-                if not found_working_stream_for_group:
-                    logger.warning(f"No working streams found for channel group '{group_name}' after checking all {num_entries} streams. Group will be omitted from playlist.")
+                        logger.warning(f"No working streams found for channel group '{group_name}' after checking all {num_entries} streams in parallel. Group will be omitted from playlist.")
             return active_working_streams
 
     def mark_stream_failed(self, channel):
