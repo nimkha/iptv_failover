@@ -21,15 +21,44 @@ class StreamChecker:
                 self.current_index.setdefault(name, 0)
 
     def get_active_streams(self):
-        """Returns dictionary of {channel: entry_dict}"""
+        """
+        Returns a dictionary of {channel_group_name: working_entry_dict}.
+        For each channel group, it tries to find the first working stream
+        starting from its current_index and cycling through if necessary.
+        If no working stream is found for a group, that group is omitted.
+        """
         with self.lock:
-            active = {}
-            for channel, entries in self.stream_groups.items():
+            active_working_streams = {}
+            for group_name, entries in self.stream_groups.items():
                 if not entries:
+                    logger.debug(f"Channel group '{group_name}' has no streams, skipping.")
                     continue
-                idx = self.current_index.get(channel, 0)
-                active[channel] = entries[idx]  # Return the full entry dictionary
-            return active
+
+                num_entries = len(entries)
+                # Get the starting index for the search, default to 0 if not set
+                start_index = self.current_index.get(group_name, 0)
+                if start_index >= num_entries: # Safety check if index is out of bounds
+                    start_index = 0
+                    self.current_index[group_name] = 0
+
+                found_working_stream_for_group = False
+                for i in range(num_entries): # Iterate once through all streams in the group
+                    current_stream_index = (start_index + i) % num_entries
+                    stream_entry = entries[current_stream_index]
+                    
+                    logger.debug(f"Checking stream {current_stream_index + 1}/{num_entries} for group '{group_name}': {stream_entry.get('url')}")
+                    if self._is_stream_working(stream_entry):
+                        logger.info(f"Found working stream for group '{group_name}': {stream_entry.get('url')} (index {current_stream_index})")
+                        active_working_streams[group_name] = stream_entry
+                        self.current_index[group_name] = current_stream_index # Update current_index to this working one
+                        found_working_stream_for_group = True
+                        break # Found a working stream for this group, move to the next group
+                    else:
+                        logger.warning(f"Stream {stream_entry.get('url')} for group '{group_name}' (index {current_stream_index}) is not working during active search.")
+                
+                if not found_working_stream_for_group:
+                    logger.warning(f"No working streams found for channel group '{group_name}' after checking all {num_entries} streams. Group will be omitted from playlist.")
+            return active_working_streams
 
     def mark_stream_failed(self, channel):
         with self.lock:
@@ -38,7 +67,7 @@ class StreamChecker:
             current = self.current_index.get(channel, 0)
             total = len(self.stream_groups[channel])
             if total > 0: # Avoid modulo by zero if a group becomes empty
-                self.current_index[channel] = (current + 1) % total
+                self.current_index[channel] = (current + 1) % total # Advance to next stream
                 logger.info(f"[FAILOVER] {channel} → Switched to index {self.current_index[channel]}")
             else:
                 logger.warning(f"[FAILOVER] Attempted to failover channel {channel}, but it has no streams.")
@@ -65,11 +94,22 @@ class StreamChecker:
     def background_monitor(self, interval=60):
         """Periodically checks if current streams are working."""
         while True:
-            logger.info("[Monitor] Checking active streams...")
-            active_streams = self.get_active_streams()
-            for channel, entry in active_streams.items():
+            logger.info("[Monitor] Starting background check of default streams...")
+            
+            streams_to_check_in_monitor = {}
+            with self.lock: # Safely access shared stream_groups and current_index
+                for channel_group_name, entries in self.stream_groups.items():
+                    if not entries:
+                        continue
+                    # Get the current default stream for this group
+                    idx = self.current_index.get(channel_group_name, 0)
+                    if idx >= len(entries): # Safety check
+                        idx = 0
+                    streams_to_check_in_monitor[channel_group_name] = entries[idx]
+
+            for channel, entry in streams_to_check_in_monitor.items():
                 if not self._is_stream_working(entry):
-                    logger.warning(f"[Monitor] {channel} stream failed (URL: {entry.get('url')}). Advancing...")
+                    logger.warning(f"[Monitor] Default stream for {channel} failed (URL: {entry.get('url')}). Advancing index via mark_stream_failed...")
                     self.mark_stream_failed(channel)
             time.sleep(interval)
 
